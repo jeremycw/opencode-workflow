@@ -147,9 +147,14 @@ bash/`worktree_apply`, not a new terminal window.
 | `worktree_list` | List worktrees, reconciled with git (git-only worktrees shown as `(unregistered)`, expired flagged `*`) |
 | `worktree_resolve_conflicts` | Resolve a pending merge: `ours`/`theirs` (resolve + stage, finish with `git commit`) or `abort` |
 
-> **Note:** the fork currently runs at the global path
-> (`~/.config/opencode/plugins/`). Moving it into `.opencode/plugin/` so it
-> travels with the template is Phase 5 work (`PLAN.md` §5.3).
+> **Note:** the plugin is now installed at the project-scoped path
+> `.opencode/plugin/` and auto-discovered by opencode (its loader globs
+> top-level `{plugin,plugins}/*.{ts,js}` under the config dir — no
+> `opencode.json` entry is needed). `.opencode/plugin/` is a byte-identical copy
+> of the vendored source of record at `plugin/opencode-worktree/`; keep the two
+> in sync. Its runtime deps are declared in `.opencode/package.json` and
+> resolved from `.opencode/node_modules`, so **restart opencode** after any
+> change.
 
 ## Repository layout
 
@@ -164,6 +169,7 @@ bash/`worktree_apply`, not a new terminal window.
 │   ├── constitution.md        # Harness constitution (injected into every agent)
 │   ├── agents/                # lead, planner, coder, reviewer, researcher
 │   ├── commands/              # feature, ship, status
+│   ├── plugin/                # Installed worktree plugin (auto-loaded; copy of plugin/opencode-worktree/)
 │   └── worktree.jsonc         # Worktree plugin config
 ├── sandbox/                   # Training project (Python + unittest) used to validate the harness
 │   ├── AGENTS.md              # Sandbox-specific conventions (nested AGENTS.md test)
@@ -174,14 +180,18 @@ bash/`worktree_apply`, not a new terminal window.
 ```
 
 > Git-ignored items not shown: `.opencode/package.json` + lockfile + `node_modules/`
-> (plugin dependency install, per-project — see `PLAN.md` §5.2).
+> (plugin dependency install, per-project — see `PLAN.md` §5.2). The worktree
+> plugin needs its runtime deps (`jsonc-parser`, `zod`) installed there.
 
 ## Quick start
 
-1. Install opencode (tested on opencode 1.18.18, Termux/Android).
-2. Clone/copy this repo and restart opencode — config is loaded once at
+1. Install opencode (tested on opencode 1.18.18, Termux/Android; the plugin
+   install was re-verified on opencode 1.18.33, 2026-09-29).
+2. Clone/copy this repo, make sure the plugin's dependencies are installed in
+   `.opencode/` (`npm install` there, or let opencode's startup install resolve
+   `.opencode/package.json`), then restart opencode — config is loaded once at
    startup, so **restart after any change** to `opencode.json`, agents,
-   commands, or skills.
+   commands, skills, or plugins.
 3. Run the sandbox tests to confirm the environment:
    `python3 -m unittest discover -s sandbox`
 4. Try it: `/feature Add a --version flag to the sandbox CLI, with tests.`

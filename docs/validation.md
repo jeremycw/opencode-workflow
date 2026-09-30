@@ -13,15 +13,21 @@ fallback path).
 - opencode 1.18.18 on Termux (Android)
 - Sandbox: Python `unittest`, stdlib only — `python3 -m unittest discover -s sandbox`
 - No pytest installed; Node v26 available but unused
-- Worktree plugin: **forked & adapted 2026-08-15 (Phase 4.5)** — agent-centric copy at
-  `~/.config/opencode/plugins/` (`worktree.ts` + `worktree/` + `kdco-primitives/`);
-  **no terminals are spawned** (work via bash + `worktree_apply`); repo config at
-  `.opencode/worktree.jsonc`
+- Worktree plugin: **forked & adapted 2026-08-15 (Phase 4.5)** — originally an
+  agent-centric copy at `~/.config/opencode/plugins/`; **as of 2026-09-29 installed
+  project-scoped at `.opencode/plugin/`** (global copy superseded for this repo),
+  byte-identical to `plugin/opencode-worktree/src/plugin/`, with deps
+  `jsonc-parser@3.3.1` + `zod@4.1.8`; **no terminals are spawned** (work via bash +
+  `worktree_apply`); repo config at `.opencode/worktree.jsonc`
 - Plugin extended 2026-08-15 (gap-fix round): `worktree_delete` gained `deleteBranch`
   auto/always/never + `commitPending: false`; new `worktree_gc` tool (dry-run + `maxAgeDays`
   override, runGc reports pruned/unregistered/kept-with-reasons); `worktree_apply` gained
   `noFF`; `worktree_list` reconciles with git on every call (git-only worktrees shown as
   `(unregistered)`, expired flagged `*`); new `worktree_resolve_conflicts` (ours/theirs/abort)
+- **Install verified 2026-09-29:** opencode 1.18.33 discovers
+  `.opencode/plugin/worktree.ts` and registers all six `worktree_*` tools
+  (`opencode debug info` / `opencode debug agent build`), no load errors. A live
+  `worktree_create` round-trip is not part of this change.
 
 ## Scenario checklist
 
@@ -66,3 +72,7 @@ Phase 4/4.5 scenarios 1–11 now pass (2026-08-15).
 migration) is applied and pending live verification after an opencode restart.**
 Phase 5 was re-scoped 2026-08-15: the goal is a **copyable template** (portability),
 not global promotion — nothing is promoted to `~/.config/opencode/`.
+
+**Post-sign-off update (2026-09-29):** the worktree plugin was relocated into the
+repo at `.opencode/plugin/` (project-scoped auto-discovery) so it travels with the
+template. No scenario result changes.
