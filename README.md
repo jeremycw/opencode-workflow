@@ -121,6 +121,10 @@ Applies to every agent as a last-match-wins layer: `bash` `*` → allow, with
 **ask** on `git push*` (all pushes — a bare `git push` cannot bypass the
 gate), `git reset --hard*`, `git branch -D*`, `git clean -f*`,
 `git push --force*`, `rm -rf*`, `npm publish*`. `webfetch`/`websearch` → allow.
+`external_directory` defaults to **ask** except `~/.local/share/opencode/worktree/**`
+→ allow, so work inside worktrees does not prompt; `doom_loop` → allow; the six
+`worktree_*` tools (`create`, `apply`, `delete`, `list`, `gc`,
+`resolve_conflicts`) are pinned to allow.
 
 ## Commands
 

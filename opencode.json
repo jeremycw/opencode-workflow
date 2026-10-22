@@ -14,6 +14,16 @@
       "npm publish*": "ask"
     },
     "webfetch": "allow",
-    "websearch": "allow"
+    "websearch": "allow",
+    "doom_loop": "allow",
+    "external_directory": {
+      "~/.local/share/opencode/worktree/**": "allow"
+    },
+    "worktree_create": "allow",
+    "worktree_apply": "allow",
+    "worktree_delete": "allow",
+    "worktree_list": "allow",
+    "worktree_gc": "allow",
+    "worktree_resolve_conflicts": "allow"
   }
 }
