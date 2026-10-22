@@ -91,12 +91,118 @@ worktree_resolve_conflicts:
 
 ## Installation
 
-Copy [`src/`](./src) to your project's `.opencode/plugin/`:
+Run the installer from a harness checkout against your project:
 
 ```bash
-mkdir -p .opencode/plugin
-cp -r src/plugin/* .opencode/plugin/
+./plugin/opencode-worktree/install.sh /path/to/your/project
 ```
+
+`TARGET_PROJECT_DIR` defaults to the current directory. The installer is
+non-interactive and idempotent.
+
+### Modes and options
+
+| Mode / option | Effect |
+|---|---|
+| *(default)* | Installs the **full harness** when run from a harness checkout; otherwise falls back to plugin-only with a notice. |
+| `--plugin-only` | Installs only the worktree plugin (the old installer behavior). |
+| `--with-sandbox` | Also installs the sandbox demo project. Implies full harness; errors if no harness checkout is found. |
+| `--force` | Backs up and replaces an existing `AGENTS.md`, `.opencode/worktree.jsonc`, or `sandbox/`. A no-op in plugin-only mode. |
+| `-h`, `--help` | Show usage. |
+| `--` | End of options. |
+
+Both modes ensure `.opencode/.gitignore` ignores `node_modules`, `package.json`,
+the lockfiles, and `.install-backups`, so a plugin-only install does not leave
+npm artifacts untracked.
+
+### What full mode installs
+
+- `opencode.json` — merged into any existing config (see guarantees below)
+- `.opencode/constitution.md`
+- `.opencode/agents/{lead,planner,coder,reviewer,researcher}.md`
+- `.opencode/commands/{feature,ship,status}.md`
+- `.opencode/worktree.jsonc` — skipped if one already exists
+- `AGENTS.md` from `templates/AGENTS.md` — skipped if one already exists
+- `docs/validation.md`
+- `src/plugin/` → `.opencode/plugin/` (per file; unrelated plugins are kept)
+- `.opencode/.gitignore` (created or appended with missing entries; it ignores
+  `node_modules`, `package.json`, `package-lock.json`, `bun.lock`, and
+  `.install-backups`, but not itself)
+- runtime deps in `.opencode/package.json`, installed with `bun install`
+  (falling back to `npm install`)
+
+The runtime `package.json` is intentionally per-project and git-ignored: it
+declares the dependency versions resolved for this checkout. Re-running the
+installer after a fresh clone recreates it and runs the dependency install.
+
+With `--with-sandbox`, the nine files in `sandbox/` are copied too (never
+`__pycache__` or `*.pyc`). An existing `sandbox/` is skipped unless `--force`
+is given; with `--force` it is always backed up, removed, and recopied so stale
+generated files cannot survive.
+
+Full mode never copies `PLAN.md`, the root `README.md`/`TODO.md`/research
+notes, the root `.gitignore`, `.git`, `node_modules`, lockfiles, the harness's
+own installed `.opencode/plugin/`, or the plugin package's development files
+(`README`, `LICENSE`, `tsconfig`, `package.json`, `install.sh`, its local
+`.opencode/worktree.jsonc`).
+
+### Config merge guarantees
+
+`opencode.json` is merged with **existing keys winning**:
+
+- Keys already in the target are kept, including unknown custom keys.
+- `default_agent` is never hijacked: it is set to `lead` only when absent.
+- `instructions` is unioned: `.opencode/constitution.md` is appended if the
+  target already has an array, or the harness array is copied if absent.
+- `permission` is filled in only where keys are missing. Existing objects such
+  as `external_directory` are deep-merged with target values winning.
+- An existing `permission.bash` is never relaxed: harness bash rules are added
+  **only** when the target already has an explicit `"*": "allow"` policy. If
+  `"*"` is missing, `"deny"`, `"ask"`, or any non-string value, no harness bash
+  rules are added and the installer warns why. `"*": "allow"` itself is never
+  injected into an existing policy.
+- If the target has a `permission` object but no `bash` key, the bash policy is
+  left untouched and the installer warns that the harness bash safety rules were
+  not added. Other missing permission keys (such as webfetch, websearch, and
+  worktree rules) are still added. A bash block is copied wholesale only when
+  the target has no `permission` object at all.
+- No write happens when the merged result is semantically unchanged, so target
+  formatting is preserved for no-ops.
+- Invalid target JSON is backed up and the installer stops before any other
+  target write: `opencode.json` (full mode) and `.opencode/package.json` (both
+  modes), including non-object documents. An empty or whitespace-only
+  `.opencode/package.json` is accepted and populated with the runtime
+  dependencies; non-empty invalid JSON still stops the run. A target
+  `opencode.jsonc` is rejected (exit 1) rather than guessed at — merge it
+  manually or use `--plugin-only`.
+
+Dependency specs already present in `.opencode/package.json` are preserved; the
+installer keeps them and prints a note instead of overwriting. `@opencode-ai/sdk`
+is type-only and intentionally not installed (it is bundled with opencode).
+
+### Backups
+
+Files that would change (including `.opencode/.gitignore` when entries are
+appended) are backed up first to:
+
+```text
+.opencode/.install-backups/<YYYYmmddHHMMSS>-<pid>/<relative-path>
+```
+
+`.install-backups` is added to `.opencode/.gitignore`. The backup directory and
+its timestamped root are created with mode `0700`, and each backup preserves
+the source file's mode (for example a `0600` `opencode.json` stays `0600`).
+Identical files are not backed up, and no `*.bak` files are written into
+loader-scanned directories such as `.opencode/agents/`, `.opencode/commands/`,
+or `.opencode/plugin/`.
+
+### After install
+
+Restart opencode — configuration, agents, commands, and plugins are loaded once
+at startup. The worktree plugin also needs the Bun runtime (`bun:sqlite`) at
+execution time even though dependencies may have been installed with npm. The
+installer updates managed directories in place; files removed from a newer
+harness version are not deleted from the target.
 
 **Requirements:**
 - `bun` (for `bun:sqlite` and the Bun runtime APIs used by the plugin)

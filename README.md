@@ -165,6 +165,11 @@ bash/`worktree_apply`, not a new terminal window.
 ├── AGENTS.md                  # Workspace notes (project facts, conventions)
 ├── opencode.json              # Config: constitution injection, default agent, permissions
 ├── RESEARCH-grok-build.md     # Research: grok-build harness (parallel tasks, worktrees)
+├── plugin/
+│   └── opencode-worktree/
+│       ├── install.sh          # Full-harness or plugin-only installer
+│       └── templates/
+│           └── AGENTS.md       # Neutral workspace notes for new projects
 ├── .opencode/
 │   ├── constitution.md        # Harness constitution (injected into every agent)
 │   ├── agents/                # lead, planner, coder, reviewer, researcher
@@ -179,19 +184,34 @@ bash/`worktree_apply`, not a new terminal window.
 └── .gitignore
 ```
 
-> Git-ignored items not shown: `.opencode/package.json` + lockfile + `node_modules/`
-> (plugin dependency install, per-project — see `PLAN.md` §5.2). The worktree
-> plugin needs its runtime deps (`jsonc-parser`, `zod`) installed there.
+> Git-ignored items not shown: `.opencode/package.json` + lockfile + `node_modules/`.
+> The runtime package is intentionally per-project (see `PLAN.md` §5.2); the
+> installer recreates it and runs the dependency install, so re-run it after a
+> fresh clone. The worktree plugin needs its runtime deps (`jsonc-parser`, `zod`)
+> installed there. `.opencode/.gitignore` itself is tracked/committable — it only
+> ignores the generated artifacts.
 
 ## Quick start
 
 1. Install opencode (tested on opencode 1.18.18, Termux/Android; the plugin
    install was re-verified on opencode 1.18.33, 2026-09-29).
-2. Clone/copy this repo, make sure the plugin's dependencies are installed in
-   `.opencode/` (`npm install` there, or let opencode's startup install resolve
-   `.opencode/package.json`), then restart opencode — config is loaded once at
-   startup, so **restart after any change** to `opencode.json`, agents,
-   commands, skills, or plugins.
+2. Install the harness into a project from this checkout:
+
+   ```bash
+   ./plugin/opencode-worktree/install.sh /path/to/project
+   ```
+
+   This one command copies the constitution, agent team, commands, docs, and
+   worktree plugin, and merges `opencode.json` without overriding existing
+   keys (`default_agent` is never hijacked; `instructions` are unioned;
+   permissions are filled only where missing, and harness bash rules are only
+   added to an existing explicit `"*": "allow"` policy). Backups preserve file
+   modes under `.opencode/.install-backups/`, and invalid config/package JSON
+   stops the installer before any target write. Use `--plugin-only` to install
+   just the worktree plugin, `--with-sandbox` to include the demo project, or
+   `--force` to back up and replace template-owned files. **Restart opencode**
+   afterward — config is loaded once at startup, so restart after any change to
+   `opencode.json`, agents, commands, skills, or plugins.
 3. Run the sandbox tests to confirm the environment:
    `python3 -m unittest discover -s sandbox`
 4. Try it: `/feature Add a --version flag to the sandbox CLI, with tests.`
