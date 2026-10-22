@@ -30,7 +30,7 @@ Phase 5). Nothing is promoted to the global opencode config.
                   ▼       ▼       ▼       ▼
              planner   coder  reviewer researcher
             (subagent)(subagent)(subagent)(subagent)
-             read-only full tools read-only read-only
+             non-code edits full tools non-code edits non-code edits
                          │       │
                          ▼       ▼
                   tests/lint  verification
@@ -106,10 +106,10 @@ default when opencode starts in this repo); the rest are subagents that only
 | Agent | Mode | Role | Access |
 |---|---|---|---|
 | **`lead`** | primary | Orchestrator. Takes feature-level objectives, runs the loop by delegating execution to subagents, coordinates from their reports, verifies, commits. | `task`: only `planner`, `coder`, `reviewer`, `researcher`, `explore` (all else denied). `bash`: everything allowed **except** `git push*`, `git reset --hard*`, `git branch -D*`, `git clean -f*`, `git push --force*`, `rm -rf*` → **ask** |
-| **`planner`** | subagent | Architecture & planning. Maps the codebase, produces file-level implementation plans with tests and risks. | Read-only: `edit` denied; `bash` mostly **ask**, with `git status/log/diff/show/branch` + `ls` allowed; `webfetch` allowed |
+| **`planner`** | subagent | Architecture & planning. Maps the codebase, produces file-level implementation plans with tests and risks. | `edit` allowed for plans/notes/docs (no source changes); `bash` unrestricted except destructive git/`rm -rf*`/`npm publish*` → **ask**; `webfetch` allowed |
 | **`coder`** | subagent | Implementation. Writes production-quality code, runs tests/lint, iterates until green. | Full `bash` access **except** `git push*`, `git reset --hard*`, `git clean -f*`, `git branch -D*` → **deny** |
-| **`reviewer`** | subagent | Independent review. Reads the diff with fresh eyes, checks correctness/security/regressions, runs tests itself. | Read-only: `edit` denied; `bash` mostly **ask**, with git read commands + test/lint runners (`npm test*`, `pytest*`, `python3 -m unittest*`, `go test*`, `cargo test*`, …) + `ls` allowed |
-| **`researcher`** | subagent | Research. Investigates dependencies, APIs, external docs with citations. | Read-only: `edit` denied; `bash` mostly **ask**, `ls` allowed; `webfetch` + `websearch` allowed |
+| **`reviewer`** | subagent | Independent review. Reads the diff with fresh eyes, checks correctness/security/regressions, runs tests itself. | `edit` allowed for non-code files (no fixes); `bash` unrestricted except destructive git/`rm -rf*`/`npm publish*` → **ask** |
+| **`researcher`** | subagent | Research. Investigates dependencies, APIs, external docs with citations. | `edit` allowed for notes/docs (no code changes); `bash` unrestricted except destructive git/`rm -rf*`/`npm publish*` → **ask**; `webfetch` + `websearch` allowed |
 
 Built-in opencode agents (`explore`, `build`, `general`, `scout`, …) remain
 available; `lead` may delegate to `explore` for fast codebase lookups, and
