@@ -106,9 +106,11 @@ message is shaped for the lead's next decision:
 | Independent review | `reviewer` | verdict (approve / needs fixes), prioritized findings, recommendation |
 
 Specialists never delegate — the lead is the only delegator to them; the
-orchestrator may task the lead. Independent tasks run in parallel worktrees:
-one worktree per task, one `coder` per worktree, merged back with
-`worktree_apply`.
+orchestrator may task the lead. For direct-mode work (`/feature`-style),
+independent tasks run in parallel worktrees: one worktree per task, one `coder`
+per worktree, merged back with `worktree_apply`. An issue-dispatched lead works
+inside its single issue worktree on the canonical issue branch and never
+merges; the orchestrator merges only after user acceptance.
 
 ## Issue workflow
 
@@ -130,32 +132,42 @@ todo ──start──► inprogress ──finish──► review ──complete
   prefixes stay sequential. A group is not finished while any member remains
   `inprogress`; blocked/failed members keep it active and block later groups
   until returned/retried.
-- **Claim the group before dispatch:** the orchestrator moves every `todo`
-  member of the group to `inprogress` *before* spawning one `lead` per issue.
-  If a claim fails, or unrelated WIP dirties main, it returns the just-claimed
+- **Claim the group before dispatch:** the orchestrator resolves every member's
+  canonical branch first (read-only), then moves every `todo` member of the
+  group to `inprogress` *before* spawning one `lead` per issue. If a lookup or
+  claim fails, or unrelated WIP dirties main, it returns the just-claimed
   issues to `todo` and reports instead of dispatching.
-- **One issue, one worktree:** each lead works in its own
-  `worktree_create` -> work/verify/commit -> `worktree_apply` merge ->
-  `worktree_delete`; the orchestrator dispatches the leads in parallel.
+- **One issue, one branch/worktree:** each issue has a canonical branch
+  `issue/<id>-<slug>`; each lead works only there
+  (`worktree_create` -> work/verify/commit inside -> leave branch and worktree
+  intact). The orchestrator dispatches leads in parallel; an issue-dispatched
+  lead never applies, merges, or deletes the worktree.
 - **Clean main for merges:** the orchestrator commits only the claim batch
-  before dispatch (so main is clean of issue moves), checks for unrelated WIP
-  before dispatching, collects every group lead report, then commits the
-  success `finish` moves in one batch.
+  before dispatch, checks for unrelated WIP before dispatching, collects every
+  group lead report, then verifies each success branch exists and has at
+  least one commit beyond the default branch
+  (`git rev-list --count refs/heads/<default>..refs/heads/<branch>` > 0)
+  before committing the `finish` moves in one batch. Finish never merges or
+  deletes a worktree.
 - **One queue owner:** run one `/issues` invocation at a time; concurrent
   invocations can split a group because there is no atomic group-claim command.
 - **Review is the acceptance gate:** a successful lead report moves the issue
-  to `review`; only the user accepts (`completed`) or rejects (`todo`). Agents
-  never self-accept; with same-prefix siblings, accept/reject by exact filename.
-- **Failure/interruption:** `blocked`/`failed` work stays `inprogress`, keeps
-  blocking later groups, and is reported; `return` puts it back in `todo` to
-  retry or abandon.
+  to `review` with its branch unmerged; only the user accepts (`completed`,
+  which merges the branch and cleans up) or rejects (`todo`, which discards the
+  worktree). Agents never self-accept; with same-prefix siblings,
+  accept/reject by exact filename.
+- **Failure/interruption:** `blocked`/`failed` work stays `inprogress` with its
+  worktree intact, keeps blocking later groups, and is reported; `return`
+  cleans up the worktree/branch before putting it back in `todo` to retry or
+  abandon.
 
 ```bash
 python3 scripts/issue_queue.py status          # queue counts + issue paths
 python3 scripts/issue_queue.py next-group      # every claimable todo in the current group
+python3 scripts/issue_queue.py branch "001 A.md" # canonical branch (any state)
 python3 scripts/issue_queue.py start "001 A.md" # claim before dispatch (exact filename)
-python3 scripts/issue_queue.py finish "001 A.md" # success -> review
-python3 scripts/issue_queue.py complete "001 A.md" # user acceptance only
+python3 scripts/issue_queue.py finish "001 A.md" # success -> review (no merge)
+python3 scripts/issue_queue.py complete "001 A.md" # user acceptance only (merge + cleanup)
 ```
 
 See `issues/README.md` for the full contract and file naming rules. State moves
@@ -169,8 +181,8 @@ dispatched by the orchestrator. The rest are subagents.
 
 | Agent | Mode | Role | Access |
 |---|---|---|---|
-| **`orchestrator`** | primary | Issue queue owner. Works numeric prefix groups in ascending order, claims every member of the active group before dispatch, sends one `lead` per issue in parallel worktrees, and moves success to `review`. Does not implement or plan. | `edit`: **deny**; `todowrite`: allow; `task`: only `lead` (all else denied); `bash`: `*` → allow, with push/reset/branch-delete/clean/`rm -rf*`/publish and `issue_queue.py complete`/`reopen` → **ask** |
-| **`lead`** | all | Engineering lead. Takes feature-level objectives (directly or dispatched for one issue), runs the loop by delegating execution to subagents, coordinates from their reports, verifies, commits. | `todowrite`: allow; `task`: only `planner`, `coder`, `reviewer`, `researcher`, `explore` (all else denied). `bash`: everything allowed **except** `git push*`, `git reset --hard*`, `git branch -D*`, `git clean -f*`, `git push --force*`, `rm -rf*` → **ask** |
+| **`orchestrator`** | primary | Issue queue owner. Works numeric prefix groups in ascending order, resolves canonical branches, claims every member of the active group before dispatch, sends one `lead` per issue in parallel worktrees, and moves success to `review` without merging. On acceptance it merges with `worktree_apply`, verifies both suites, and deletes the merged worktree/branch. Does not implement or plan. | `edit`: **deny**; `todowrite`: allow; `task`: only `lead` (all else denied); `bash`: `*` → allow, with push/reset/branch-delete/clean/`rm -rf*`/publish and `issue_queue.py complete`/`reopen` → **ask** |
+| **`lead`** | all | Engineering lead. Takes feature-level objectives (directly or dispatched for one issue), runs the loop by delegating execution to subagents, coordinates from their reports, verifies, commits. Issue-dispatched, it works inside its canonical issue branch/worktree and never merges or deletes it. | `todowrite`: allow; `task`: only `planner`, `coder`, `reviewer`, `researcher`, `explore` (all else denied). `bash`: everything allowed **except** `git push*`, `git reset --hard*`, `git branch -D*`, `git clean -f*`, `git push --force*`, `rm -rf*` → **ask** |
 | **`planner`** | subagent | Architecture & planning. Maps the codebase, produces file-level implementation plans with tests and risks. | `edit` allowed for plans/notes/docs (no source changes); `bash` unrestricted except destructive git/`rm -rf*`/`npm publish*` → **ask**; `webfetch` allowed |
 | **`coder`** | subagent | Implementation. Writes production-quality code, runs tests/lint, iterates until green. | Full `bash` access **except** `git push*`, `git reset --hard*`, `git clean -f*`, `git branch -D*` → **deny** |
 | **`reviewer`** | subagent | Independent review. Reads the diff with fresh eyes, checks correctness/security/regressions, runs tests itself. | `edit` allowed for non-code files (no fixes); `bash` unrestricted except destructive git/`rm -rf*`/`npm publish*` → **ask** |
@@ -198,9 +210,9 @@ route to `lead`.
 
 | Command | Purpose |
 |---|---|
-| `/issues [status\|next\|all\|accept <id>\|reject <id>]` | Work the issue queue. Default is one prefix group: claim every member (`todo` → `inprogress`) before dispatch, send one `lead` per issue in parallel worktrees, stop at `review`. `all` processes groups sequentially but still stops every issue at `review`; `accept`/`reject` are the user's acceptance gate (exact filename when a prefix is shared). |
+| `/issues [status\|next\|all\|accept <id>\|reject <id>]` | Work the issue queue. Default is one prefix group: resolve canonical `issue/<id>-<slug>` branches, claim every member (`todo` → `inprogress`) before dispatch, send one `lead` per issue in parallel worktrees that never merge, stop at `review` with branches intact. `all` processes groups sequentially but still stops every issue at `review`; `accept` merges the branch, runs both suites, completes, and deletes the worktree; `reject` discards the worktree/branch before returning to `todo` (exact filename when a prefix is shared). |
 | `/feature <request>` | Start a feature-level request: "Add user authentication using OAuth…". Delegation-first: `lead` coordinates; `explore`/`planner`/`coder`/`reviewer`/`researcher` execute; independent tasks run in parallel worktrees. |
-| `/ship` | Close out current work: apply pending worktrees, verify, review (`explore` state check + `reviewer` pass + `coder` fixes), update docs, create routine commits. **Never pushes.** |
+| `/ship` | Close out current work: apply pending direct-mode worktrees (never unaccepted issue branches), verify, review (`explore` state check + `reviewer` pass + `coder` fixes), update docs, create routine commits. **Never pushes.** |
 | `/status` | Brief repo/git state: current branch, uncommitted changes, recent commits, work in progress, worktree state, and issue queue status. |
 
 ## Worktree plugin (parallel isolation)
@@ -256,7 +268,7 @@ bash/`worktree_apply`, not a new terminal window.
 │   ├── AGENTS.md              # Sandbox-specific conventions (nested AGENTS.md test)
 │   └── README.md              # Sandbox "product intent"
 ├── docs/
-│   └── validation.md          # Scenario checklist + sign-off (scenarios 1–21)
+│   └── validation.md          # Scenario checklist + sign-off (scenarios 1–24)
 └── .gitignore
 ```
 
@@ -313,9 +325,11 @@ The harness is validated end-to-end against `sandbox/` — see
   delegation depth, worktree create/merge-back/GC on Termux.
 - **Scenario 12** (constitution injection recitation) is applied and pending
   live verification after an opencode restart.
-- **Scenarios 17–21** (depth-2 dispatch, numeric order + claim-before-dispatch,
-  failure stays `inprogress`, review acceptance gate, parallel same-prefix
-  groups) are configured and need a live session after an opencode restart.
+- **Scenarios 17–24** (depth-2 dispatch, numeric order +
+  claim-before-dispatch, canonical issue branches, failure stays `inprogress`,
+  review acceptance gate with merge-on-acceptance and rejection cleanup,
+  parallel same-prefix groups) are configured and need a live session after an
+  opencode restart.
 - **Phase 5** (package as a copyable template) is the final phase; Phase 4.6's
   structural items remain pending.
 

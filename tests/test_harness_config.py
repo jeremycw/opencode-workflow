@@ -182,6 +182,62 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("single-flight per prefix", constitution.lower())
         self.assertIn("worktree", constitution.lower())
 
+    def test_issue_branch_and_acceptance_contract_is_documented(self):
+        orchestrator = (AGENTS / "orchestrator.md").read_text(encoding="utf-8")
+        for token in (
+            "issue_queue.py branch",
+            "git rev-parse --verify",
+            "worktree_apply",
+            "worktree_resolve_conflicts",
+            "worktree_delete",
+            "deleteBranch",
+            "discover -s tests",
+            "discover -s sandbox",
+            "rev-list --count",
+            'deleteBranch: "always"',
+            "commitPending: false",
+        ):
+            self.assertIn(token, orchestrator, token)
+        self.assertNotIn("tip differs", orchestrator)
+        self.assertNotIn("same tip", orchestrator)
+
+        lead = (AGENTS / "lead.md").read_text(encoding="utf-8")
+        self.assertIn("issue_queue.py branch", lead)
+        self.assertLowerIn("do not merge into the default branch", lead.lower())
+        self.assertIn("leave the branch and worktree intact", lead)
+        for token in ("branch", "worktree", "head SHA"):
+            self.assertIn(token, lead, token)
+        self.assertIn("git rev-parse --verify --quiet refs/heads/<canonical>", lead)
+        self.assertIn("worktree_list", lead)
+        self.assertIn("Outcome: blocked", lead)
+
+        _, issues_text = command("issues")
+        for token in (
+            "branch",
+            "worktree_apply",
+            "worktree_delete",
+            "reopen",
+            "return",
+            "rev-list --count",
+            'deleteBranch: "always"',
+            "commitPending: false",
+        ):
+            self.assertIn(token, issues_text, token)
+
+        _, ship_text = command("ship")
+        self.assertIn("issue/*", ship_text)
+        self.assertIn("acceptance", ship_text)
+
+        issues_readme = (ROOT / "issues" / "README.md").read_text(encoding="utf-8")
+        self.assertIn("issue/<id>-<slug>", issues_readme)
+        self.assertIn("branch", issues_readme)
+
+        plugin_readme = (
+            ROOT / "plugin" / "opencode-worktree" / "README.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("issue/<zero-padded id>-<slug>", plugin_readme)
+        self.assertIn("acceptance", plugin_readme)
+
     def assertLowerIn(self, needle: str, haystack: str) -> None:
         self.assertIn(needle, haystack)
 

@@ -52,6 +52,9 @@ fallback path).
 | 19 | Failure stays inprogress | Dispatch an issue that the lead reports as `blocked` or `failed`. | Issue remains in `issues/inprogress/`; orchestrator reports the blocker and does not `finish` or `complete` it | needs user | Requires a live session; `return` is the only way back to `todo` |
 | 20 | Acceptance gate | After a successful issue lands in `review`, try to proceed without `/issues accept <id>`. | Orchestrator never self-accepts; only explicit `/issues accept <id>` moves `review` → `completed`, and `/issues reject <id>` moves it back to `todo` | needs user | Requires a live session and the user's acceptance decision; with same-prefix siblings, accept/reject must use the exact filename (ambiguous numeric ids are rejected with the review filenames listed) |
 | 21 | Parallel same-prefix group | Put `030 Alpha.md`, `030 Beta.md`, and `031 Later.md` in `issues/todo/`, run `/issues all`. | Both `030` issues are claimed before dispatch; one `lead` per issue runs in parallel worktrees; `031` is not started while `030` is active; each issue stops at `review` | needs user | Requires a live session; `next-group` and prefix-group claim mechanics are covered by `tests/test_issue_queue.py` |
+| 22 | Canonical issue branch | Put one issue (e.g. `003 Use branches.md`) in `issues/todo/`, run `/issues`. | Orchestrator resolves `issue/003-use-branches` before claiming, passes it to the lead, and the lead creates/works/commits in that worktree; the lead does not apply, merge, or delete it; `finish` verifies the branch exists and is non-empty and moves the issue to `review` with main unchanged | needs user | Requires a live session; slug/branch resolution, any-state lookup, and duplicate-branch errors are covered deterministically by `tests/test_issue_queue.py` (`BranchTests`) |
+| 23 | Finish does not merge (zero-commit guard) | Complete an issue whose branch has zero commits beyond the default branch (`git rev-list --count refs/heads/main..refs/heads/<branch>` = 0, e.g. its tip equals the default tip or main advanced since creation), or whose branch is missing, alongside a normal success. | The missing/zero-commit branch stays `inprogress` and is reported blocked; the normal success moves to `review`; `finish` never merges or deletes a worktree | needs user | Requires a live session; the guard is a prompt rule, not a queue-script rule |
+| 24 | Acceptance merge and rejection cleanup | With an issue in `review`, run `/issues accept <id>` on a clean default branch; separately reject another issue (or `return` a blocked one). | Accept: preflight clean main -> `worktree_apply` merge -> both suites green -> `completed` -> merged worktree/branch deleted; a conflict or red suite keeps `review` and the worktree. Reject/return: worktree+branch deleted (`always`, discarding WIP) before the state move; an orphan branch blocks | needs user | Requires a live session and user acceptance; orchestrator never resolves conflicts, resets main, or self-accepts |
 
 **Correction (2026-08-15):** scenario 5's original "expected" text ("no prompt on the feature-branch push") contradicts locked decision PLAN.md §3.4: **ask on ALL `git push*`**, so a bare `git push` cannot bypass the gate. Expected behavior is an `ask` prompt on every push, feature branch included.
 
@@ -79,13 +82,23 @@ Phase 4/4.5 scenarios 1–11 now pass (2026-08-15).
 | 19 Failure stays inprogress | needs user | prompt/queue contract configured; requires a live blocked/failed lead report | 2026-10-22 |
 | 20 Acceptance gate | needs user | orchestrator can only `finish`; `complete` is user-driven via `/issues accept`; exact filename required for same-prefix siblings | 2026-10-22 |
 | 21 Parallel same-prefix group | needs user | `next-group` and per-prefix claim mechanics covered by unit tests; parallel worktree dispatch requires a restarted session + live model run | 2026-10-22 |
+| 22 Canonical issue branch | needs user | branch/slug resolution and duplicate-branch errors covered by `BranchTests`; live dispatch requires a restarted session | 2026-10-23 |
+| 23 Finish does not merge (zero-commit guard) | needs user | zero-commit guard is a prompt rule; requires a live lead report with `git rev-list --count main..branch` = 0 (no commit beyond the default branch) | 2026-10-23 |
+| 24 Acceptance merge and rejection cleanup | needs user | configured for `worktree_apply` merge + both suites + `worktree_delete auto`; rejection/return cleanup-before-move; requires live user acceptance | 2026-10-23 |
 
 **Sign-off: all scenarios 1–11 pass as of 2026-08-15. Scenario 12 (constitution
 migration) is applied and pending live verification after an opencode restart.
-Scenarios 17–21 (issue orchestration, Phase 4.7) are configured and marked
+Scenarios 17–24 (issue orchestration, Phase 4.7) are configured and marked
 `needs user`: they require a restarted opencode session and a live model run.**
 Phase 5 was re-scoped 2026-08-15: the goal is a **copyable template** (portability),
 not global promotion — nothing is promoted to `~/.config/opencode/`.
+
+**Deterministic coverage note (2026-10-23):** canonical branch resolution — the
+slug rule, any-state lookup, numeric ambiguity, unknown ids, duplicate-branch
+collisions, and the `branch` CLI's output/exit codes — is covered by
+`BranchTests` in `tests/test_issue_queue.py`. The no-merge `finish`, zero-commit
+guard, acceptance merge, and rejection/orphan cleanup are prompt contracts
+verified live by scenarios 22–24.
 
 **Post-sign-off update (2026-09-29):** the worktree plugin was relocated into the
 repo at `.opencode/plugin/` (project-scoped auto-discovery) so it travels with the

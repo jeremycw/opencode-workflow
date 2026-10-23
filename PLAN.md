@@ -97,6 +97,19 @@ agent when to use it.
     (numeric prefix groups, single-flight per prefix, claim-before-dispatch,
     no-clobber, locked). Same-prefix issues run concurrently, each in its own
     worktree; `review` is the user acceptance gate; agents never self-accept.
+    **Decision 10 update (2026-10-23, issue 003):** every issue has one
+    canonical branch `issue/<id>-<slug>`, resolved read-only by
+    `scripts/issue_queue.py branch` (slug: lowercase title, non-`[a-z0-9]`
+    runs -> `-`, trim, cap 60, fallback `issue`; duplicate branch = error).
+    Issue-dispatched leads work and commit only inside that branch's worktree
+    and never merge; `finish` verifies the branch exists and has at least one
+    commit beyond the default branch (`git rev-list --count
+    refs/heads/<default>..refs/heads/<branch>` > 0) but does not merge. The
+    orchestrator merges
+    with `worktree_apply` only after user acceptance, runs both suites, then
+    completes and deletes the merged worktree/branch. Rejection/return cleans
+    up the worktree/branch before the state move. Direct-mode worktrees are
+    unchanged.
 
 ## 4. Target architecture
 
@@ -860,7 +873,7 @@ never mention worktrees, parallel delegation, or the plan/review checkpoints.
 | `.opencode/agents/reviewer.md` | Add: concise findings (file:line list); no full diff dumps |
 | `.opencode/agents/researcher.md` | Add: concise answer/evidence/recommendation (mostly present) |
 | `.opencode/commands/feature.md` | Rewrite: encode the full delegation-first workflow incl. worktree parallelism |
-| `.opencode/commands/ship.md` | Rewrite: worktree-aware close-out (apply pending worktrees first) |
+| `.opencode/commands/ship.md` | Rewrite: worktree-aware close-out (apply pending direct-mode worktrees first, never issue branches) |
 | `.opencode/commands/status.md` | Add worktree state to the report |
 | `.opencode/commands/plan.md` | **NEW** — plan-only checkpoint: planner → present plan → stop for user approval |
 | `.opencode/commands/review.md` | **NEW** — review-only pass: reviewer → delegate fixes → report |
@@ -874,7 +887,7 @@ never mention worktrees, parallel delegation, or the plan/review checkpoints.
 |---|---|---|---|
 | 13 | Delegation-first | `/feature` a small sandbox feature | Transcript shows `coder` implemented (lead never edited code); lead's report lists subagent contributions |
 | 14 | Parallel worktrees | `/feature` two independent sandbox features | Two worktrees created; parallel coders; both merged back via `worktree_apply`; tests green |
-| 15 | Command integration | `/plan` (stops for approval), `/review` (reviews current diff), `/worktree` (list/create/apply), `/ship` with a pending worktree | Each command routes through `lead` and performs its stage; ship applies pending worktrees first |
+| 15 | Command integration | `/plan` (stops for approval), `/review` (reviews current diff), `/worktree` (list/create/apply), `/ship` with a pending worktree | Each command routes through `lead` and performs its stage; ship applies pending direct-mode worktrees first (never issue branches) |
 | 16 | Context management | Ask `lead` to summarize its own delegation pattern mid-feature | Lead's context stays small: it read few files directly; subagents did the heavy reading |
 
 ### 4.6.4 Acceptance
@@ -908,18 +921,40 @@ The filename is the unique issue identity, so a numeric id is only usable when
 the prefix has one member in the expected state; otherwise callers pass the
 exact filename.
 
+**Decision update (2026-10-23, issue 003):** leads work on canonical branches
+instead of committing to the default branch, and the orchestrator merges only
+when the user accepts. Each issue maps to `issue/<zero-padded id>-<slug>`
+(slug: lowercased title, every run of non-`[a-z0-9]` -> `-`, trim, cap 60,
+fallback `issue`); `issue_queue.py branch "<exact filename>"` resolves it
+read-only across all states, and two issues mapping to the same branch is an
+error. An issue-dispatched `lead` creates
+`worktree_create(branch: "<canonical>", baseBranch: "main")`, works/commits
+inside, and leaves branch and worktree intact — no apply, merge, or delete; if
+either already exists it reports `blocked` and does not reuse or delete it.
+`finish` verifies the branch exists (`git rev-parse --verify`) and has at
+least one commit beyond the default branch (`git rev-list --count
+refs/heads/<default>..refs/heads/<branch>` > 0; zero-commit = blocked) but
+does not merge.
+On user acceptance the orchestrator preflights a clean main on the default
+branch, `worktree_apply`s in merge mode, runs both test suites, completes the
+issue, then deletes the merged worktree/branch. A conflict or red suite keeps
+the issue in `review`; the orchestrator never resolves conflicts or resets.
+Rejection/`return` deletes the worktree/branch (discarding WIP) before the state
+move; an orphan branch without a worktree blocks. Direct-mode `/feature`-style
+worktrees still apply and delete within the task.
+
 ### 4.7.1 Changes
 
 | File | Change |
 |---|---|
-| `.opencode/agents/orchestrator.md` | **NEW** primary agent: `edit: deny`, `todowrite: allow`, `task` allowlist only `lead`, bash queue/git safety gates; uses `next-group`, claims every group member before dispatch, launches one `lead` per issue in parallel worktrees, never implements/plans |
-| `.opencode/agents/lead.md` | `mode: all`, `todowrite: allow`; prompt covers direct start vs. dispatched-for-one-issue, worktree create/work/apply/delete for dispatched issues, issue scope rules, `Outcome:` + issue id in reports |
+| `.opencode/agents/orchestrator.md` | **NEW** primary agent: `edit: deny`, `todowrite: allow`, `task` allowlist only `lead`, bash queue/git safety gates; resolves canonical branches before claiming, claims every group member before dispatch, launches one `lead` per issue in parallel worktrees, verifies success branches at `finish` (no merge), and only merges via `worktree_apply` after acceptance; never implements/plans |
+| `.opencode/agents/lead.md` | `mode: all`, `todowrite: allow`; prompt covers direct start vs. dispatched-for-one-issue, canonical-branch worktree create/work/commit inside, no apply/merge/delete when dispatched (direct-mode worktrees unchanged), issue scope rules, `Outcome:` + issue id + branch/worktree/head SHA in reports |
 | `opencode.json` | `default_agent: orchestrator`; `subagent_depth: 2` (opencode >= 1.18.2) |
 | `.opencode/commands/issues.md` | **NEW** `/issues [status\|next\|all\|accept <id>\|reject <id>]`, one prefix group by default, `all` walks groups sequentially and stops each issue at review |
 | `.opencode/commands/status.md` | Adds queue status |
-| `scripts/issue_queue.py` | **NEW** stdlib queue helper: prefix groups, single-flight per prefix, exact-filename disambiguation, `next-group`, no-clobber moves, `fcntl` lock, `--root`, CLI exit codes 0/1/2 |
-| `issues/` | `README.md` contract, `.gitignore` (`.lock`), four state dirs with `.gitkeep` |
-| `tests/` | **NEW** structural harness config tests + queue behavior tests (stdlib `unittest`, no PyYAML), including same-prefix group concurrency and `next-group` |
+| `scripts/issue_queue.py` | **NEW** stdlib queue helper: prefix groups, single-flight per prefix, exact-filename disambiguation, `next-group`, canonical branch resolution (`branch`, `slugify`, `Issue.branch`, collision = error), no-clobber moves, `fcntl` lock, `--root`, CLI exit codes 0/1/2 |
+| `issues/` | `README.md` contract (including canonical branches and the acceptance merge), `.gitignore` (`.lock`), four state dirs with `.gitkeep` |
+| `tests/` | **NEW** structural harness config tests + queue behavior tests (stdlib `unittest`, no PyYAML), including same-prefix group concurrency, `next-group`, slug/branch resolution and collision behavior |
 | Installer + docs | Full-mode install of orchestrator, `/issues`, queue script and issue scaffolding; config merge warns on `subagent_depth < 2`; README/AGENTS/constitution/validation updated |
 
 ### 4.7.2 Contract
@@ -929,19 +964,30 @@ exact filename.
 - Numeric prefix groups in ascending order; at most one prefix may be
   `inprogress` at a time, but any number of same-prefix issues may run
   concurrently (single-flight per prefix).
+- Every issue has one canonical branch `issue/<zero-padded id>-<slug>`,
+  resolved read-only with `issue_queue.py branch "<exact filename>"` across all
+  states; duplicate branches are an error. The orchestrator resolves every
+  member's branch before claiming and passes it to each lead explicitly.
 - Every member of the current group is claimed before any dispatch. A partial
-  claim failure (or unrelated WIP after the claim commit) returns the
-  just-claimed issues to `todo` and commits only those issue-state moves; one
-  issue gets one lead, and each lead works in its own git worktree
-  (`worktree_create` → work/verify/commit → `worktree_apply` merge →
-  `worktree_delete`).
+  claim failure, failed branch lookup, or unrelated WIP after the claim commit
+  returns the just-claimed issues to `todo` and commits only those issue-state
+  moves; one issue gets one lead, and each lead works only inside its canonical
+  branch's git worktree (`worktree_create` with `baseBranch: "main"` →
+  work/verify/commit inside → leave branch and worktree intact). The lead never
+  applies, merges to the default branch, or deletes the worktree.
 - The orchestrator commits only the claim batch (issue-state moves) before
-  dispatch so main is clean of issue moves for `worktree_apply`, then checks
-  `git status --porcelain` and does not dispatch if unrelated WIP remains. It
-  collects all group lead reports before moving any state, then commits the
-  success `finish` moves together. A group is **not** finished while any member
-  remains `inprogress`; blocked/failed members keep the prefix active and block
-  later groups until returned/retried.
+  dispatch, then checks `git status --porcelain` and does not dispatch if
+  unrelated WIP remains. It collects all group lead reports before moving any
+  state, then verifies each success branch exists and has at least one commit
+  beyond the default branch (`git rev-list --count
+  refs/heads/<default>..refs/heads/<branch>` > 0; a zero-commit branch is
+  blocked); only then does it commit
+  the success `finish` moves together. `finish` never merges or deletes a
+  worktree. A group is **not** finished while any member remains `inprogress`;
+  blocked/failed members keep the prefix active and block later groups until
+  returned/retried.
+- Starting a new group while `review` issues still have unmerged branches is a
+  warning, not a block; those branches merge only on acceptance.
 - The filename is the unique identity: an identical filename across states is
   an error; numeric ids resolve within the expected state and are ambiguous
   when siblings share that state, so callers use the exact filename.
@@ -950,20 +996,32 @@ exact filename.
   Review is the acceptance gate: only the user runs `/issues accept` or
   `/issues reject` (exact filename when a prefix is shared); agents never
   self-accept.
-- Failure/interruption leaves the issue in `inprogress`, keeps blocking later
-  groups, and is reported.
+- Acceptance preflights a clean main on the default branch (`main` here;
+  `master` where that is the default), merges the canonical branch with
+  `worktree_apply(mode: "merge")`, runs both test suites, then `complete`s the
+  issue and deletes the merged worktree/branch. Conflicts or a red suite keep
+  the issue in `review`; the orchestrator never resolves conflicts and never
+  resets main.
+- Failure/interruption leaves the issue in `inprogress` with its branch and
+  worktree intact, keeps blocking later groups, and is reported. Rejection and
+  `return` delete the worktree/branch (`deleteBranch: "always"`,
+  `commitPending: false`) before the state move; an orphan branch without a
+  worktree blocks instead of being auto-deleted.
 - `/issues` defaults to one group per invocation; `all` processes groups
   sequentially, stops every issue at `review`, and does not start the next
-  group until blocked/failed members are returned/retried.
+  group until blocked/failed members are returned/retried. Direct-mode
+  `/feature`-style worktrees still apply/delete within the task.
 
 ### 4.7.3 Validation
 
-Scenarios 17–21 added to `docs/validation.md` (depth-2 dispatch, numeric order
+Scenarios 17–24 added to `docs/validation.md` (depth-2 dispatch, numeric order
 + claim-before-dispatch, failure stays `inprogress`, acceptance gate, parallel
-same-prefix group). They are marked `needs user` pending a live session after
-an opencode restart. Queue mechanics — including prefix groups, exact-filename
-disambiguation, and `next-group` determinism — are covered deterministically
-by `python3 -m unittest discover -s tests`.
+same-prefix group, canonical branch lifecycle, no-merge `finish`, acceptance
+merge). They are marked `needs user` pending a live session after an opencode
+restart. Queue mechanics — including prefix groups, exact-filename
+disambiguation, `next-group` determinism, slug/branch resolution, and
+collision/rejection behavior — are covered deterministically by
+`python3 -m unittest discover -s tests`.
 
 ---
 
@@ -1051,7 +1109,7 @@ sign-off complete — all validation scenarios 1–11 pass (`docs/validation.md`
    the remaining commands are pending user go-ahead.
 8. **DONE** — Phase 4.7: issue orchestration at depth 2 (`orchestrator` + `/issues`
    + `scripts/issue_queue.py` + `issues/` scaffolding; `subagent_depth: 2`,
-   `lead` mode `all`). Implemented 2026-10-22; scenarios 17–20 await a live session.
+   `lead` mode `all`). Implemented 2026-10-22; scenarios 17–24 await a live session.
 9. **PENDING** — Phase 5: package the harness as a copyable template for any workspace
    (re-scoped 2026-08-15 — no global promotion; Phase 6 removed). Final phase;
    execution pending user go-ahead.

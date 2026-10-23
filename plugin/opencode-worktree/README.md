@@ -267,12 +267,19 @@ worktrees in parallel; specialists never delegate.
 
 - `/issues` claims every `todo` issue in the current same-prefix group
   (`todo` → `inprogress`) **before** spawning one `lead` per issue, each in its
-  own worktree; success lands in `review` for explicit **user** acceptance
-  (`/issues accept <id>` → `completed`). Failure stays `inprogress`.
-- Direct-mode independent tasks (`/feature`-style) → `worktree_create` each,
-  then `worktree_apply(branch, mode: "merge")` back before the final report. An
-  issue-dispatched `lead` instead works inside its single issue worktree and
-  does not nest more per-task worktrees.
+  own worktree on the canonical branch `issue/<zero-padded id>-<slug>`
+  (`issues/README.md` has the slug rule). The issue lead works and commits
+  inside that worktree but does **not** call `worktree_apply`, does not merge
+  to the default branch, and does not delete the worktree. Success lands in
+  `review` with branch and worktree intact for explicit **user** acceptance;
+  the orchestrator then applies it on acceptance (`worktree_apply` in `merge`
+  mode, both suites green, `complete`, then `worktree_delete` with
+  `deleteBranch: "auto"`). Failure stays `inprogress` with the worktree intact.
+- Direct-mode independent tasks (`/feature`-style) are **unchanged**:
+  `worktree_create` each, then `worktree_apply(branch, mode: "merge")` back
+  before the final report and `worktree_delete` after verification. Only an
+  issue-dispatched `lead` defers apply/merge/delete to the orchestrator's
+  acceptance gate.
 - Delegation depth is 2 (`subagent_depth: 2`): the orchestrator may task
   `lead`; `lead` may task planners/coders/reviewers; specialists never spawn
   subagents.
