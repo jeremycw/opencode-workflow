@@ -153,9 +153,11 @@ todo ──start──► inprogress ──finish──► review ──complete
   invocations can split a group because there is no atomic group-claim command.
 - **Review is the acceptance gate:** a successful lead report moves the issue
   to `review` with its branch unmerged; only the user accepts (`completed`,
-  which merges the branch and cleans up) or rejects (`todo`, which discards the
-  worktree). Agents never self-accept; with same-prefix siblings,
-  accept/reject by exact filename.
+  which merges the branch, resolves conflicts through a dispatched fresh `lead`
+  acceptance conflict resolver in the main checkout when needed, verifies, and
+  cleans up) or rejects (`todo`, which discards the worktree). Agents never
+  self-accept; with same-prefix siblings, accept/reject by exact filename. One
+  acceptance runs at a time.
 - **Failure/interruption:** `blocked`/`failed` work stays `inprogress` with its
   worktree intact, keeps blocking later groups, and is reported; `return`
   cleans up the worktree/branch before putting it back in `todo` to retry or
@@ -181,7 +183,7 @@ dispatched by the orchestrator. The rest are subagents.
 
 | Agent | Mode | Role | Access |
 |---|---|---|---|
-| **`orchestrator`** | primary | Issue queue owner. Works numeric prefix groups in ascending order, resolves canonical branches, claims every member of the active group before dispatch, sends one `lead` per issue in parallel worktrees, and moves success to `review` without merging. On acceptance it merges with `worktree_apply`, verifies both suites, and deletes the merged worktree/branch. Does not implement or plan. | `edit`: **deny**; `todowrite`: allow; `task`: only `lead` (all else denied); `bash`: `*` → allow, with push/reset/branch-delete/clean/`rm -rf*`/publish and `issue_queue.py complete`/`reopen` → **ask** |
+| **`orchestrator`** | primary | Issue queue owner. Works numeric prefix groups in ascending order, resolves canonical branches, claims every member of the active group before dispatch, sends one `lead` per issue in parallel worktrees, and moves success to `review` without merging. On explicit acceptance it merges with `worktree_apply`, verifies both suites, and deletes the merged worktree/branch; on conflicts it dispatches a fresh `lead` acceptance conflict resolver in the main checkout, then independently gates the merge commit before completing. Does not implement, plan, or resolve conflicts itself. | `edit`: **deny**; `todowrite`: allow; `task`: only `lead` (all else denied); `bash`: `*` → allow, with push/reset/branch-delete/clean/`rm -rf*`/publish and `issue_queue.py complete`/`reopen` → **ask** |
 | **`lead`** | all | Engineering lead. Takes feature-level objectives (directly or dispatched for one issue), runs the loop by delegating execution to subagents, coordinates from their reports, verifies, commits. Issue-dispatched, it works inside its canonical issue branch/worktree and never merges or deletes it. | `todowrite`: allow; `task`: only `planner`, `coder`, `reviewer`, `researcher`, `explore` (all else denied). `bash`: everything allowed **except** `git push*`, `git reset --hard*`, `git branch -D*`, `git clean -f*`, `git push --force*`, `rm -rf*` → **ask** |
 | **`planner`** | subagent | Architecture & planning. Maps the codebase, produces file-level implementation plans with tests and risks. | `edit` allowed for plans/notes/docs (no source changes); `bash` unrestricted except destructive git/`rm -rf*`/`npm publish*` → **ask**; `webfetch` allowed |
 | **`coder`** | subagent | Implementation. Writes production-quality code, runs tests/lint, iterates until green. | Full `bash` access **except** `git push*`, `git reset --hard*`, `git clean -f*`, `git branch -D*` → **deny** |
@@ -210,7 +212,7 @@ route to `lead`.
 
 | Command | Purpose |
 |---|---|
-| `/issues [status\|next\|all\|accept <id>\|reject <id>]` | Work the issue queue. Default is one prefix group: resolve canonical `issue/<id>-<slug>` branches, claim every member (`todo` → `inprogress`) before dispatch, send one `lead` per issue in parallel worktrees that never merge, stop at `review` with branches intact. `all` processes groups sequentially but still stops every issue at `review`; `accept` merges the branch, runs both suites, completes, and deletes the worktree; `reject` discards the worktree/branch before returning to `todo` (exact filename when a prefix is shared). |
+| `/issues [status\|next\|all\|accept <id>\|reject <id>]` | Work the issue queue. Default is one prefix group: resolve canonical `issue/<id>-<slug>` branches, claim every member (`todo` → `inprogress`) before dispatch, send one `lead` per issue in parallel worktrees that never merge, stop at `review` with branches intact. `all` processes groups sequentially but still stops every issue at `review`; `accept` merges the branch, runs both suites, completes, and deletes the worktree, and on conflicts dispatches a fresh `lead` acceptance conflict resolver in the main checkout before verifying the merge commit; `reject` discards the worktree/branch before returning to `todo` (exact filename when a prefix is shared). |
 | `/feature <request>` | Start a feature-level request: "Add user authentication using OAuth…". Delegation-first: `lead` coordinates; `explore`/`planner`/`coder`/`reviewer`/`researcher` execute; independent tasks run in parallel worktrees. |
 | `/ship` | Close out current work: apply pending direct-mode worktrees (never unaccepted issue branches), verify, review (`explore` state check + `reviewer` pass + `coder` fixes), update docs, create routine commits. **Never pushes.** |
 | `/status` | Brief repo/git state: current branch, uncommitted changes, recent commits, work in progress, worktree state, and issue queue status. |
@@ -327,9 +329,9 @@ The harness is validated end-to-end against `sandbox/` — see
   live verification after an opencode restart.
 - **Scenarios 17–24** (depth-2 dispatch, numeric order +
   claim-before-dispatch, canonical issue branches, failure stays `inprogress`,
-  review acceptance gate with merge-on-acceptance and rejection cleanup,
-  parallel same-prefix groups) are configured and need a live session after an
-  opencode restart.
+  review acceptance gate with merge-on-acceptance, acceptance conflict
+  resolution, and rejection cleanup, parallel same-prefix groups) are
+  configured and need a live session after an opencode restart.
 - **Phase 5** (package as a copyable template) is the final phase; Phase 4.6's
   structural items remain pending.
 

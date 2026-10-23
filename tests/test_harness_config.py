@@ -238,6 +238,107 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("issue/<zero-padded id>-<slug>", plugin_readme)
         self.assertIn("acceptance", plugin_readme)
 
+    def test_acceptance_conflict_resolution_contract_is_documented(self):
+        def normalized(path: Path) -> str:
+            return " ".join(path.read_text(encoding="utf-8").split())
+
+        orchestrator = normalized(AGENTS / "orchestrator.md")
+        for token in (
+            "acceptance conflict resolver",
+            "MERGE_HEAD",
+            "--diff-filter=U",
+            "HEAD^2",
+            "merge-base --is-ancestor",
+            "worktree_resolve_conflicts",
+            "reviewer",
+            "python3 -m unittest discover -s tests",
+            "python3 -m unittest discover -s sandbox",
+        ):
+            self.assertIn(token, orchestrator, token)
+        self.assertIn("keep the issue in `review`", orchestrator)
+        self.assertIn("never reset", orchestrator)
+        for token in (
+            "PRE_MERGE",
+            "one acceptance at a time",
+            "never self-accept",
+            "already committed",
+        ):
+            self.assertIn(token, orchestrator, token)
+        self.assertNotIn(
+            "If it reports conflicts — or a real merge is in progress", orchestrator
+        )
+        self.assertNotIn(
+            "Never resolve conflicts yourself (you have edit denied) and never reset.",
+            orchestrator,
+        )
+
+        lead = normalized(AGENTS / "lead.md")
+        for token in (
+            "acceptance conflict resolver",
+            "main checkout",
+            "MERGE_HEAD",
+            "--diff-filter=U",
+            "git add",
+            "git commit --no-edit",
+            "reviewer",
+            "python3 -m unittest discover -s tests",
+            "python3 -m unittest discover -s sandbox",
+            "Outcome: blocked",
+        ):
+            self.assertIn(token, lead, token)
+        self.assertIn("do not create a worktree", lead)
+
+        _, issues_text = command("issues")
+        issues = " ".join(issues_text.split())
+        for token in (
+            "acceptance conflict resolver",
+            "MERGE_HEAD",
+            "HEAD^2",
+            "is-ancestor",
+            "conflicted",
+            "worktree_resolve_conflicts",
+            "python3 -m unittest discover -s tests",
+            "python3 -m unittest discover -s sandbox",
+            "PRE_MERGE",
+            "one acceptance at a time",
+        ):
+            self.assertIn(token, issues, token)
+        self.assertNotIn("Never resolve conflicts yourself and never reset.", issues)
+
+        for name, text in (("orchestrator", orchestrator), ("issues", issues)):
+            with self.subTest(ordering=name):
+                self.assertLess(
+                    text.index("Probe `MERGE_HEAD` FIRST"),
+                    text.index("Only when no `MERGE_HEAD` exists, require clean"),
+                )
+
+        constitution = normalized(ROOT / ".opencode" / "constitution.md")
+        for token in ("acceptance conflict resolver", "merge commit", "both test suites"):
+            self.assertIn(token, constitution, token)
+        self.assertIn("never self-accept", constitution.lower())
+
+        for relative in (
+            "README.md",
+            "PLAN.md",
+            "docs/validation.md",
+            "plugin/opencode-worktree/README.md",
+        ):
+            with self.subTest(document=relative):
+                text = normalized(ROOT / relative)
+                self.assertIn("conflict resolver", text.lower())
+
+        plan = normalized(ROOT / "PLAN.md")
+        self.assertIn("issue 004", plan.lower())
+        self.assertIn("conflict resolution", plan.lower())
+        self.assertNotIn(
+            "the orchestrator never resolves conflicts and never resets", plan.lower()
+        )
+
+        validation = normalized(ROOT / "docs" / "validation.md")
+        self.assertIn("issue 004", validation.lower())
+        self.assertIn("conflict resolution", validation.lower())
+        self.assertNotIn("orchestrator never resolves conflicts", validation.lower())
+
     def assertLowerIn(self, needle: str, haystack: str) -> None:
         self.assertIn(needle, haystack)
 
