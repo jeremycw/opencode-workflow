@@ -34,8 +34,11 @@ SANDBOX_FILES=(
   test_main.py
   test_thermostat.py
 )
-AGENT_FILES=(lead planner coder reviewer researcher)
-COMMAND_FILES=(feature ship status)
+AGENT_FILES=(orchestrator lead planner coder reviewer researcher)
+COMMAND_FILES=(issues feature ship status)
+ISSUE_STATES=(todo inprogress review completed)
+ISSUE_QUEUE_SRC="$HARNESS_ROOT/scripts/issue_queue.py"
+ISSUES_SRC="$HARNESS_ROOT/issues"
 
 warn() { printf 'warning: %s\n' "$*" >&2; }
 err() { printf 'error: %s\n' "$*" >&2; }
@@ -46,7 +49,8 @@ usage() {
   printf '\n'
   printf 'Install the opencode engineering harness and/or the opencode-worktree\n'
   printf 'plugin into TARGET_PROJECT_DIR. TARGET_PROJECT_DIR defaults to the\n'
-  printf 'current working directory.\n'
+  printf 'current working directory. The full harness includes the issue\n'
+  printf 'orchestrator, /issues command, issue queue helper, and issue scaffolding.\n'
   printf '\n'
   printf 'Modes:\n'
   printf '  (default)        Full harness when run from a harness checkout, else plugin only\n'
@@ -208,11 +212,20 @@ require_dir_or_absent "$TARGET_OC/.install-backups" ".opencode/.install-backups"
 
 if [ "$MODE" = "full" ]; then
   require_dir_or_absent "$TARGET_ABS/docs" "docs"
+  require_dir_or_absent "$TARGET_ABS/scripts" "scripts"
+  require_dir_or_absent "$TARGET_ABS/issues" "issues"
   require_dir_or_absent "$TARGET_OC/agents" ".opencode/agents"
   require_dir_or_absent "$TARGET_OC/commands" ".opencode/commands"
   require_file_or_absent "$TARGET_ABS/AGENTS.md" "AGENTS.md"
   require_file_or_absent "$TARGET_OC/worktree.jsonc" ".opencode/worktree.jsonc"
   require_file_or_absent "$TARGET_OC/constitution.md" ".opencode/constitution.md"
+  require_file_or_absent "$TARGET_ABS/scripts/issue_queue.py" "scripts/issue_queue.py"
+  require_file_or_absent "$TARGET_ABS/issues/README.md" "issues/README.md"
+  require_file_or_absent "$TARGET_ABS/issues/.gitignore" "issues/.gitignore"
+  for state in "${ISSUE_STATES[@]}"; do
+    require_dir_or_absent "$TARGET_ABS/issues/$state" "issues/$state"
+    require_file_or_absent "$TARGET_ABS/issues/$state/.gitkeep" "issues/$state/.gitkeep"
+  done
   for agent in "${AGENT_FILES[@]}"; do
     require_file_or_absent "$TARGET_OC/agents/$agent.md" ".opencode/agents/$agent.md"
   done
@@ -249,6 +262,12 @@ if [ "$MODE" = "full" ]; then
   add_missing_file "$HARNESS_ROOT/.opencode/constitution.md"
   add_missing_file "$HARNESS_ROOT/.opencode/worktree.jsonc"
   add_missing_file "$HARNESS_ROOT/docs/validation.md"
+  add_missing_file "$ISSUE_QUEUE_SRC"
+  add_missing_file "$ISSUES_SRC/README.md"
+  add_missing_file "$ISSUES_SRC/.gitignore"
+  for state in "${ISSUE_STATES[@]}"; do
+    add_missing_file "$ISSUES_SRC/$state/.gitkeep"
+  done
   for agent in "${AGENT_FILES[@]}"; do
     add_missing_file "$HARNESS_ROOT/.opencode/agents/$agent.md"
   done
@@ -382,6 +401,23 @@ install_if_absent() {
   mkdir -p "$(dirname "$dest")"
   cp -- "$src" "$dest"
   INSTALL_IF_ABSENT_STATUS="installed"
+}
+
+# Issue scaffolding is project-owned: install only when absent (or with
+# --force), never clobber an existing queue or its docs.
+ISSUES_STATUS="not installed"
+ISSUES_INSTALLED=0
+ISSUES_KEPT=0
+install_issue_file() {
+  install_if_absent "$1" "$2"
+  case "$INSTALL_IF_ABSENT_STATUS" in
+    installed | replaced*)
+      ISSUES_INSTALLED=$((ISSUES_INSTALLED + 1))
+      ;;
+    *)
+      ISSUES_KEPT=$((ISSUES_KEPT + 1))
+      ;;
+  esac
 }
 
 ensure_opencode_gitignore() {
@@ -591,7 +627,11 @@ if (!isPlainObject(harness)) {
 
 if (!fs.existsSync(targetPath)) {
   fs.writeFileSync(targetPath, JSON.stringify(harness, null, 2) + "\n");
-  note("default_agent: set to " + JSON.stringify(harness.default_agent || "lead"));
+  note("default_agent: set to " + JSON.stringify(harness.default_agent || "orchestrator"));
+  note(
+    "subagent_depth: set to " +
+      JSON.stringify(harness.subagent_depth === undefined ? 2 : harness.subagent_depth)
+  );
   note('instructions: added "' + CONSTITUTION + '"');
   note("permission: copied harness block");
   finish();
@@ -636,18 +676,39 @@ if (Object.prototype.hasOwnProperty.call(target, "instructions")) {
 }
 
 if (Object.prototype.hasOwnProperty.call(target, "default_agent")) {
-  if (target.default_agent === "lead") {
-    note('default_agent: kept "lead"');
+  if (target.default_agent === (harness.default_agent || "orchestrator")) {
+    note("default_agent: kept " + JSON.stringify(target.default_agent));
   } else {
     note(
       "default_agent: kept " +
         JSON.stringify(target.default_agent) +
-        ' (harness default is "lead")'
+        ' (harness default is "orchestrator")'
     );
   }
 } else {
-  merged.default_agent = harness.default_agent || "lead";
+  merged.default_agent = harness.default_agent || "orchestrator";
   note("default_agent: set to " + JSON.stringify(merged.default_agent));
+}
+
+if (Object.prototype.hasOwnProperty.call(target, "subagent_depth")) {
+  const depth = target.subagent_depth;
+  if (typeof depth === "number" && depth >= 2) {
+    note("subagent_depth: kept " + JSON.stringify(depth));
+  } else {
+    warn(
+      "subagent_depth in " +
+        targetPath +
+        " is " +
+        JSON.stringify(depth) +
+        "; issue orchestration needs 2 (opencode >= 1.18.2). Leaving it unchanged."
+    );
+    note("subagent_depth: kept existing (below 2; not overridden)");
+    merged.subagent_depth = depth;
+  }
+} else {
+  merged.subagent_depth =
+    harness.subagent_depth === undefined ? 2 : clone(harness.subagent_depth);
+  note("subagent_depth: set to " + JSON.stringify(merged.subagent_depth));
 }
 
 const harnessPermission = isPlainObject(harness.permission) ? harness.permission : {};
@@ -788,6 +849,22 @@ if [ "$MODE" = "full" ]; then
   WORKTREE_STATUS="$INSTALL_IF_ABSENT_STATUS"
 
   install_managed_file "$HARNESS_ROOT/docs/validation.md" "docs/validation.md"
+
+  install_managed_file "$ISSUE_QUEUE_SRC" "scripts/issue_queue.py"
+
+  install_issue_file "$ISSUES_SRC/README.md" "issues/README.md"
+  install_issue_file "$ISSUES_SRC/.gitignore" "issues/.gitignore"
+  for state in "${ISSUE_STATES[@]}"; do
+    install_issue_file "$ISSUES_SRC/$state/.gitkeep" "issues/$state/.gitkeep"
+  done
+
+  if [ "$ISSUES_INSTALLED" -gt 0 ] && [ "$ISSUES_KEPT" -gt 0 ]; then
+    ISSUES_STATUS="installed $ISSUES_INSTALLED, kept $ISSUES_KEPT existing"
+  elif [ "$ISSUES_INSTALLED" -gt 0 ]; then
+    ISSUES_STATUS="installed ($ISSUES_INSTALLED file(s))"
+  elif [ "$ISSUES_KEPT" -gt 0 ]; then
+    ISSUES_STATUS="kept existing (project files win)"
+  fi
 fi
 
 # Fallback when a harness file unexpectedly disappears between preflight and
@@ -997,6 +1074,8 @@ if [ "$MODE" = "full" ]; then
   printf '  workspace:    AGENTS.md (%s)\n' "$AGENTS_STATUS"
   printf '  worktree cfg: .opencode/worktree.jsonc (%s)\n' "$WORKTREE_STATUS"
   printf '  docs:         docs/validation.md\n'
+  printf '  queue:        scripts/issue_queue.py\n'
+  printf '  issues:       issues/ (%s)\n' "$ISSUES_STATUS"
   printf '  sandbox:      %s\n' "$SANDBOX_STATUS"
 fi
 printf '  plugin:       .opencode/plugin\n'

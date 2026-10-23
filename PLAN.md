@@ -11,11 +11,11 @@ promotion to the global config (`~/.config/opencode/`).
 **Status:** Phases 0–4.5 implemented and validated (2026-08-15) — scaffold, git init,
 constitution, agent team, commands, sandbox validation (scenarios 1–8), and the worktree
 plugin fork + gap-fix round (scenarios 9–11) are all complete; see the per-phase status
-notes below. **Phase 4.6 (delegation-first workflow & command integration) is planned,
-not started** — addresses two observed weaknesses from real usage: the lead still does
-too much work itself, and the commands are disconnected from the workflow. **Phase 5
-(portability — copyable template, no global promotion) remains the final phase: planned,
-not started.** Phase 6 (dynamic model routing) removed.
+notes below. Phase 4.6's prompt-text portion is implemented; its structural
+enforcement and new commands remain pending. **Phase 4.7 (issue orchestration,
+depth-2 delegation) implemented 2026-10-22** — see below. **Phase 5 (portability —
+copyable template, no global promotion) remains the final phase: planned, not
+started.** Phase 6 (dynamic model routing) removed.
 Constitution migrated to `.opencode/constitution.md` (injected via `instructions`;
 AGENTS.md = workspace notes only) — 2026-08-15, see decision 8.
 
@@ -33,7 +33,7 @@ user can delegate feature-level objectives to:
   branches, destructive git, deploys, secrets, migrations, architecture).
 - Models are interchangeable infrastructure, routed per task type.
 
-## 2. Current state (audit)
+## 2. Initial state (audit, 2026-08-15)
 
 | Component | Status |
 |---|---|
@@ -88,15 +88,31 @@ agent when to use it.
    lead's context is reserved for coordination. Enforced via prompt policy
    (`lead.md` + constitution §3a), not permissions — the lead keeps `edit`/
    `bash` for integration fixes (merge conflicts, one-line corrections).
+10. **Issue orchestration at depth 2** (2026-10-22, Phase 4.7): a new primary
+    `orchestrator` owns `issues/` and dispatches one `lead` per issue, so the
+    hierarchy is `orchestrator` → `lead` → specialists. `subagent_depth: 2`
+    (opencode >= 1.18.2) enables the second level; `lead` becomes `mode: all`
+    with `todowrite: allow` so it works both as a direct command target and as
+    a task target. State moves go through `scripts/issue_queue.py`
+    (numeric order, single-flight, claim-before-dispatch, no-clobber, locked).
+    `review` is the user acceptance gate; agents never self-accept.
 
 ## 4. Target architecture
 
 ```text
                     USER (product owner)
-                             │  "Build X feature"
+                             │  "/issues" | "Build X feature"
                              ▼
               ┌─────────────────────────────┐
-              │      lead (primary agent)    │
+              │   orchestrator (primary)     │
+              │   owns issues/, claims       │
+              │   before dispatch, edit deny │
+              │   task -> lead only          │
+              └──────────────┬───────────────┘
+                             │  subagent_depth: 2
+                             ▼
+              ┌─────────────────────────────┐
+              │      lead (mode: all)        │
               │  orchestrates the loop, owns │
               │  delegation via permission:  │
               │  task                        │
@@ -136,7 +152,8 @@ agents inherit the session/global model.
 |---|---|---|---|
 | Architecture / planning | `planner` | Strongest reasoning | e.g. `anthropic/claude-opus-4-5` |
 | Implementation | `coder` | Strong coding | e.g. `anthropic/claude-sonnet-4-5` |
-| Orchestration | `lead` | Global default | set `"model"` in `opencode.json` |
+| Queue orchestration | `orchestrator` | Global default | set `"model"` in `opencode.json` |
+| Engineering orchestration | `lead` | Strong coordination | e.g. the session default |
 | Review (independent) | `reviewer` | Second provider / independent model | e.g. `openai/gpt-5-2` |
 | Research | `researcher` | Fast / cheap | e.g. global `small_model` |
 | Repo exploration | `explore` (built-in) | Fast / small | inherits |
@@ -581,9 +598,9 @@ Goal: prove the loop end-to-end with zero risk before packaging the template
 | `.opencode/worktree.jsonc` | Explicit worktree plugin config for this repo |
 | `docs/validation.md` | Scenario checklist + expected outcomes + sign-off table |
 
-> **Environment note (verified 2026-08-15):** `pytest` is NOT installed on
-> this Termux box; Node v26 and Python 3.14 are. The sandbox uses **Python
-> `unittest`** (stdlib, zero install) as its test runner.
+> **Environment note (verified 2026-10-22):** `pytest` is NOT installed on
+> this Termux box; Node v18.20.4 and Python 3.11.2 are. The sandbox uses
+> **Python `unittest`** (stdlib, zero install) as its test runner.
 
 ### 4.2 `.opencode/worktree.jsonc`
 
@@ -703,8 +720,8 @@ Phase 5 work (§5.3).
 5. **Wire the workflow (make it ours):**
    - `lead.md` delegation conventions: `worktree_create` in parallel for
      independent tasks; `worktree_apply` (merge) back to the main checkout
-     before the final report; flat delegation — subagents never delegate
-     (grok's depth limit = 1).
+     before the final report; specialists never delegate — the lead is their
+     only delegator, and the orchestrator may task the lead (grok's depth limit = 1).
    - `.opencode/worktree.jsonc` config for this repo (already present from
      Phase 4).
 6. **Validate:** extend `docs/validation.md` with scenarios 9–11 below and
@@ -746,7 +763,7 @@ Phase 5 work (§5.3).
   cleanup for entries whose worktree no longer exists + age-based pruning (default
   `maxAgeDays: 30`, `onlyIfMerged`, never prunes without a recorded base branch).
 - **Step 6 done:** scenarios 9–11 ran and passed — results in `docs/validation.md`.
-- **Correction (2026-08-15):** step 5's "flat delegation — subagents never delegate"
+- **Correction (2026-08-15):** step 5's "flat delegation — specialists never delegate"
   rule (grok's depth limit = 1; RESEARCH-grok-build.md §1.4, adoption in §4) is **not
   yet written into `lead.md`/`.opencode/constitution.md`** — the parallel-delegation
   and `worktree_apply` conventions are present, the flat-delegation rule is not.
@@ -755,7 +772,7 @@ Phase 5 work (§5.3).
   of prompt text; the missing piece is prompt-text polish only. Open item; fold into
   Phase 5 or a quick follow-up edit.
   > **RESOLVED 2026-08-15 (Phase 4.6):** the flat-delegation rule is now written into
-  > `lead.md` ("Subagents never delegate — you are the only delegator") and
+  > `lead.md` ("Specialists never delegate — you are their only delegator") and
   > `constitution.md` §3 step 4.
 
 ### 4.5.6 Gap-fix round (2026-08-15) — DONE
@@ -876,6 +893,47 @@ rule. **Still pending user decision:** structural enforcement (deny `edit`/
 
 ---
 
+## Phase 4.7 — Issue orchestration (2026-10-22) — IMPLEMENTED
+
+Goal: add a persistent issue queue above the lead so the user can hand over a
+backlog, not just one feature. An `orchestrator` claims `issues/todo` work in
+numeric order, dispatches exactly one `lead` per issue, and parks success in
+`issues/review` for explicit user acceptance.
+
+### 4.7.1 Changes
+
+| File | Change |
+|---|---|
+| `.opencode/agents/orchestrator.md` | **NEW** primary agent: `edit: deny`, `todowrite: allow`, `task` allowlist only `lead`, bash queue/git safety gates; owns queue state and dispatch, never implements/plans |
+| `.opencode/agents/lead.md` | `mode: all`, `todowrite: allow`; prompt covers direct start vs. dispatched-for-one-issue, issue scope rules, `Outcome:` + issue id in reports |
+| `opencode.json` | `default_agent: orchestrator`; `subagent_depth: 2` (opencode >= 1.18.2) |
+| `.opencode/commands/issues.md` | **NEW** `/issues [status\|next\|all\|accept <id>\|reject <id>]`, one issue by default, all stops each at review |
+| `.opencode/commands/status.md` | Adds queue status |
+| `scripts/issue_queue.py` | **NEW** stdlib queue helper: states/transitions, numeric order, duplicate detection, no-clobber moves, `fcntl` lock, `--root`, CLI exit codes 0/1/2 |
+| `issues/` | `README.md` contract, `.gitignore` (`.lock`), four state dirs with `.gitkeep` |
+| `tests/` | **NEW** structural harness config tests + queue behavior tests (stdlib `unittest`, no PyYAML) |
+| Installer + docs | Full-mode install of orchestrator, `/issues`, queue script and issue scaffolding; config merge warns on `subagent_depth < 2`; README/AGENTS/constitution/validation updated |
+
+### 4.7.2 Contract
+
+- States: `todo` → `inprogress` → `review` → `completed`; `reopen` returns
+  `review` → `todo`, `return` returns `inprogress` → `todo`.
+- Single-flight (`start` refuses a second `inprogress`), claim-before-dispatch,
+  one issue/one lead, no-clobber moves, `issues/.lock`.
+- Review is the acceptance gate: only the user runs `/issues accept` or
+  `/issues reject`; agents never self-accept.
+- Failure/interruption leaves the issue in `inprogress` and is reported.
+
+### 4.7.3 Validation
+
+Scenarios 17–20 added to `docs/validation.md` (depth-2 dispatch, numeric order
++ claim-before-dispatch, failure stays `inprogress`, acceptance gate). They are
+marked `needs user` pending a live session after an opencode restart. Queue
+mechanics are covered deterministically by `python3 -m unittest discover -s
+tests`.
+
+---
+
 ## Phase 5 — Portability: copy to any workspace (re-scoped 2026-08-15)
 
 The old goal — graduate the harness to `~/.config/opencode/` — is **dropped**.
@@ -903,7 +961,7 @@ as a template; nothing is promoted globally.
 | Upstream attribution | Fork diverged from kdcokenny/opencode-worktree (MIT) with no in-repo copy of the original | Vendor the upstream original under `vendor/` for reference/diffing |
 | Sandbox is repo-specific | `sandbox/` is this repo's training project — irrelevant to other use cases | Keep it as the demo/validation example; the scenarios are reusable, the project is swappable (§5.3.4) |
 | Platform notes | AGENTS.md + lead.md carry Termux environment notes | Mark platform notes as adaptive (Termux vs desktop); the plugin spawns no terminals, so it is platform-neutral |
-| `default_agent: lead` | Copyable, but should remain a choice | Document opting out; a copied harness must never hijack an existing workspace's default |
+| `default_agent: orchestrator` | Copyable, but should remain a choice | Document opting out; a copied harness must never hijack an existing workspace's default |
 
 ### 5.3 Deliverables
 
@@ -937,9 +995,9 @@ as a template; nothing is promoted globally.
   on other workspaces.
 - Model routing stays static per-agent (decision 5); Phase 6 is removed.
 
-**Status (2026-08-15):** plan updated; execution pending user go-ahead — this is the
-**only remaining phase**. Phase 4/4.5 sign-off complete — all validation scenarios
-1–11 pass (`docs/validation.md`).
+**Status (2026-08-15):** plan updated; execution pending user go-ahead — Phase 5 is
+the **final phase**, while Phase 4.6's structural items remain pending. Phase 4/4.5
+sign-off complete — all validation scenarios 1–11 pass (`docs/validation.md`).
 
 ---
 
@@ -954,10 +1012,14 @@ as a template; nothing is promoted globally.
 5. **DONE** — Phase 4: build sandbox, run scenarios 1–8, sign off in `docs/validation.md`.
 6. **DONE** — Phase 4.5: fork + adapt the worktree plugin (Termux fix, `worktree_apply`,
    GC) → validate scenarios 9–11, sign off.
-7. **PENDING** — Phase 4.6: delegation-first workflow & command integration
+7. **PARTIAL** — Phase 4.6: delegation-first workflow & command integration
    (lead = orchestrator, worktree parallelism, `/plan` `/review` `/worktree` commands,
-   scenarios 13–16). Planned 2026-08-15; implementation pending user go-ahead.
-8. **PENDING** — Phase 5: package the harness as a copyable template for any workspace
+   scenarios 13–16). Prompt-text portion done 2026-08-15; structural enforcement and
+   the remaining commands are pending user go-ahead.
+8. **DONE** — Phase 4.7: issue orchestration at depth 2 (`orchestrator` + `/issues`
+   + `scripts/issue_queue.py` + `issues/` scaffolding; `subagent_depth: 2`,
+   `lead` mode `all`). Implemented 2026-10-22; scenarios 17–20 await a live session.
+9. **PENDING** — Phase 5: package the harness as a copyable template for any workspace
    (re-scoped 2026-08-15 — no global promotion; Phase 6 removed). Final phase;
    execution pending user go-ahead.
 

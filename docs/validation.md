@@ -1,4 +1,4 @@
-# Phase 4 + 4.5 — Sandbox Validation
+# Phase 4 + 4.5 + 4.7 — Sandbox Validation
 
 Goal: prove the engineering loop end-to-end with zero risk before the workflow
 is packaged as a copyable template (Phase 5 — no global promotion). All
@@ -8,11 +8,13 @@ Status legend: `pending` / `pass` / `fail` / `blocked` / `needs user` (verifiabl
 in a live interactive session) / `pass (fallback)` (scenario met via the documented
 fallback path).
 
-## Environment (verified 2026-08-15)
+## Environment (verified 2026-08-15; issue orchestration 2026-10-22)
 
-- opencode 1.18.18 on Termux (Android)
+- opencode **1.19.3** on Termux (Android). Depth-2 delegation
+  (`subagent_depth: 2`) requires **opencode >= 1.18.2**; the earlier 1.18.18
+  runs below predate issue orchestration.
 - Sandbox: Python `unittest`, stdlib only — `python3 -m unittest discover -s sandbox`
-- No pytest installed; Node v26 available but unused
+- No pytest installed; Node v18.20.4 available; only the installer config merge uses it
 - Worktree plugin: **forked & adapted 2026-08-15 (Phase 4.5)** — originally an
   agent-centric copy at `~/.config/opencode/plugins/`; **as of 2026-09-29 installed
   project-scoped at `.opencode/plugin/`** (global copy superseded for this repo),
@@ -45,6 +47,10 @@ fallback path).
 | 10 | Merge-back (`worktree_apply`) | Work in a worktree (change + commit), then `worktree_apply` with `merge`; introduce an overlapping edit to force a conflict. | Changes merge into main; conflicts reported as a file list; no data loss | pass | Verified 2026-08-15: `worktree_apply` (merge) applied the worktree branch to main, reported `docs/s10-conflict-probe.md` as conflicted (both sides preserved in conflict markers), `validation.md` merged cleanly; conflict resolved by dropping the scratch probe |
 | 11 | Stale-worktree GC | Abandon a worktree (remove its git worktree manually), then trigger GC via a subsequent `worktree_create`. | Stale registry entry pruned automatically | pass | Verified 2026-08-15, **both paths**: (a) registry cleanup — `wt/gc-probe` removed via `git worktree remove`, then creating `wt/gc-trigger` ran GC before create and pruned the stale entry; (b) **age-based prune now tested in-session** via `worktree_gc(maxAgeDays: 0)` — dry-run flagged `wt/gc-age-probe2` as "expired and merged" (base branch recorded), run pruned its git worktree + registry entry; entry without a recorded base branch kept with reason (GC safety) |
 | 12 | Constitution migration | After an opencode restart, ask `lead`, a subagent (`planner`), and a built-in (`explore`): "Recite the four sections of the Harness Constitution." Then read `AGENTS.md`. | All three recite the constitution **without reading any file** (proves `instructions` injection reaches primary, subagents, and built-ins); `AGENTS.md` contains zero constitution text (workspace notes only) | needs user | Migration applied 2026-08-15: constitution at `.opencode/constitution.md`, wired via `"instructions"` in `opencode.json`; AGENTS.md trimmed to workspace notes. Injection verification requires a restarted session (config loads once at startup) |
+| 17 | Depth-2 dispatch | Restart opencode, then `/issues` with one small `todo` issue. | `orchestrator` (primary, edit denied) claims the issue and dispatches exactly one `lead`; `lead` delegates to `explore`/`planner`/`coder`/`reviewer`; no "task denied" for the level-2 call | needs user | Requires `subagent_depth: 2` (opencode >= 1.18.2) and a restarted session; verify via transcript, not a live model test here |
+| 18 | Numeric order + claim before dispatch | Put issues `002` and `010` in `issues/todo/`, run `/issues all`. | `002` is claimed (`inprogress`) before `010`; the lead is not spawned until the move is visible; each issue stops at `review` | needs user | Requires a live session; deterministic queue behavior is covered by `tests/test_issue_queue.py` |
+| 19 | Failure stays inprogress | Dispatch an issue that the lead reports as `blocked` or `failed`. | Issue remains in `issues/inprogress/`; orchestrator reports the blocker and does not `finish` or `complete` it | needs user | Requires a live session; `return` is the only way back to `todo` |
+| 20 | Acceptance gate | After a successful issue lands in `review`, try to proceed without `/issues accept <id>`. | Orchestrator never self-accepts; only explicit `/issues accept <id>` moves `review` → `completed`, and `/issues reject <id>` moves it back to `todo` | needs user | Requires a live session and the user's acceptance decision |
 
 **Correction (2026-08-15):** scenario 5's original "expected" text ("no prompt on the feature-branch push") contradicts locked decision PLAN.md §3.4: **ask on ALL `git push*`**, so a bare `git push` cannot bypass the gate. Expected behavior is an `ask` prompt on every push, feature branch included.
 
@@ -65,11 +71,17 @@ Phase 4/4.5 scenarios 1–11 now pass (2026-08-15).
 | 8 Worktree (Termux risk) | pass | plugin forked/adapted 2026-08-15 — no terminal spawn (Phase 4.5); see scenarios 9–11 | 2026-08-15 |
 | 9 Worktree create on Termux | pass | none | 2026-08-15 |
 | 10 Merge-back (worktree_apply) | pass | none | 2026-08-15 |
-| 11 | Stale-worktree GC | pass | both paths verified 2026-08-15: registry cleanup + age-based prune via `worktree_gc(maxAgeDays: 0)` | 2026-08-15 |
-| 12 | Constitution migration | needs user | applied 2026-08-15; injection verification requires a restarted opencode session (config loads once at startup) | 2026-08-15 |
+| 11 Stale-worktree GC | pass | both paths verified 2026-08-15: registry cleanup + age-based prune via `worktree_gc(maxAgeDays: 0)` | 2026-08-15 |
+| 12 Constitution migration | needs user | applied 2026-08-15; injection verification requires a restarted opencode session (config loads once at startup) | 2026-08-15 |
+| 17 Depth-2 dispatch | needs user | configured 2026-10-22; requires opencode restart + live `/issues` session | 2026-10-22 |
+| 18 Numeric order + claim before dispatch | needs user | queue behavior covered by unit tests; live dispatch requires a restarted session | 2026-10-22 |
+| 19 Failure stays inprogress | needs user | prompt/queue contract configured; requires a live blocked/failed lead report | 2026-10-22 |
+| 20 Acceptance gate | needs user | orchestrator can only `finish`; `complete` is user-driven via `/issues accept` | 2026-10-22 |
 
 **Sign-off: all scenarios 1–11 pass as of 2026-08-15. Scenario 12 (constitution
-migration) is applied and pending live verification after an opencode restart.**
+migration) is applied and pending live verification after an opencode restart.
+Scenarios 17–20 (issue orchestration, Phase 4.7) are configured and marked
+`needs user`: they require a restarted opencode session and a live model run.**
 Phase 5 was re-scoped 2026-08-15: the goal is a **copyable template** (portability),
 not global promotion — nothing is promoted to `~/.config/opencode/`.
 

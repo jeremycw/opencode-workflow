@@ -18,13 +18,19 @@ Phase 5). Nothing is promoted to the global opencode config.
 
 ```
                     USER (product owner)
-                             │  "/feature Add OAuth login…"
+                             │  "/issues" | "/feature Add OAuth login…"
                              ▼
               ┌───────────────────────────────┐
-              │        lead (primary agent)    │
-              │  orchestrates the loop, owns   │
-              │  delegation via permission:    │
-              │  task                          │
+              │     orchestrator (primary)     │
+              │  owns issues/, claims before   │
+              │  dispatch, one lead per issue  │
+              └───────────────┬───────────────┘
+                              │  task: only lead
+                              ▼
+              ┌───────────────────────────────┐
+              │         lead (mode: all)       │
+              │  engineering loop, delegates   │
+              │  via permission: task          │
               └───┬───────┬───────┬───────┬────┘
                   │       │       │       │
                   ▼       ▼       ▼       ▼
@@ -43,13 +49,17 @@ Phase 5). Nothing is promoted to the global opencode config.
                     USER REVIEW ("Good. Next…")
 ```
 
+Delegation is two levels deep (`subagent_depth: 2`): `orchestrator` → `lead` →
+specialists. The orchestrator dispatches; the lead coordinates; specialists
+never delegate. `/feature`, `/ship`, and `/status` start `lead` directly.
+
 Three layers make this work:
 
 | Layer | Where | Role |
 |---|---|---|
-| **Constitution** | `.opencode/constitution.md` | Behavioral contract — division of responsibility, approval boundary, the engineering loop. Injected into **every** agent via the `instructions` field in `opencode.json` (no agent has to read it). |
-| **Agents** | `.opencode/agents/*.md` | The team: one primary orchestrator (`lead`) + four specialized subagents. |
-| **Commands** | `.opencode/commands/*.md` | User-facing entry points: `/feature`, `/ship`, `/status`. |
+| **Constitution** | `.opencode/constitution.md` | Behavioral contract — division of responsibility, approval boundary, the engineering loop, issue orchestration. Injected into **every** agent via the `instructions` field in `opencode.json` (no agent has to read it). |
+| **Agents** | `.opencode/agents/*.md` | The team: primary `orchestrator` (queue owner), `lead` (mode `all`), and four specialized subagents. |
+| **Commands** | `.opencode/commands/*.md` | User-facing entry points: `/issues`, `/feature`, `/ship`, `/status`. |
 
 `AGENTS.md` at the repo root holds workspace-specific notes only (project
 facts, conventions) — a copied harness leaves it clear for the new project's
@@ -74,10 +84,11 @@ own instructions.
   Needs you)
 ```
 
-**Approval boundary** — `lead` stops and asks the user only for: deploys, push
-to protected branches, destructive git/DB operations, security/auth changes,
-secrets, major new dependencies, architecture changes, and substantial
-deviations from the request. Everything else runs autonomously.
+**Approval boundary** — agents stop and ask the user only for: deploys, push to
+protected branches, destructive git/DB operations, security/auth changes,
+secrets, major new dependencies, architecture changes, substantial deviations
+from the request, and accepting/rejecting an issue in `review`. Everything else
+runs autonomously.
 
 ## Delegation & coordination
 
@@ -93,19 +104,53 @@ message is shaped for the lead's next decision:
 | Implementation + tests | `coder` | what changed, verification results, deviations, reviewer focus |
 | Independent review | `reviewer` | verdict (approve / needs fixes), prioritized findings, recommendation |
 
-Subagents never delegate — the lead is the only delegator. Independent tasks
-run in parallel worktrees: one worktree per task, one `coder` per worktree,
-merged back with `worktree_apply`.
+Specialists never delegate — the lead is the only delegator to them; the
+orchestrator may task the lead. Independent tasks run in parallel worktrees:
+one worktree per task, one `coder` per worktree, merged back with
+`worktree_apply`.
+
+## Issue workflow
+
+`issues/` is a persistent queue owned by the `orchestrator` agent and moved
+only by `scripts/issue_queue.py`:
+
+```
+todo ──start──► inprogress ──finish──► review ──complete──► completed
+                  │                       │
+                  └──return──► todo       └──reopen──► todo
+```
+
+- **Numeric order:** issues are worked by integer prefix (`002` before `010`).
+- **Single-flight:** at most one issue is `inprogress` at a time.
+- **Claim before dispatch:** the orchestrator moves an issue to `inprogress`
+  *before* spawning one `lead` subagent for it.
+- **Review is the acceptance gate:** a successful lead report moves the issue
+  to `review`; only the user accepts (`completed`) or rejects (`todo`). Agents
+  never self-accept.
+- **Failure/interruption:** `blocked`/`failed` work stays `inprogress` and is
+  reported; `return` puts it back in `todo` to retry or abandon.
+
+```bash
+python3 scripts/issue_queue.py status      # queue counts + issue paths
+python3 scripts/issue_queue.py next        # lowest-numbered todo issue
+python3 scripts/issue_queue.py start 001   # claim before dispatch
+python3 scripts/issue_queue.py finish 001  # success -> review
+python3 scripts/issue_queue.py complete 001 # user acceptance only
+```
+
+See `issues/README.md` for the full contract and file naming rules. State moves
+are no-clobber and locked through `issues/.lock`.
 
 ## Agents
 
-All agents live in `.opencode/agents/`. `lead` is the primary agent (the
-default when opencode starts in this repo); the rest are subagents that only
-`lead` can delegate to via the `task` tool.
+All agents live in `.opencode/agents/`. `orchestrator` is the default primary
+agent; `lead` runs in `all` mode so it can be started directly by a command or
+dispatched by the orchestrator. The rest are subagents.
 
 | Agent | Mode | Role | Access |
 |---|---|---|---|
-| **`lead`** | primary | Orchestrator. Takes feature-level objectives, runs the loop by delegating execution to subagents, coordinates from their reports, verifies, commits. | `task`: only `planner`, `coder`, `reviewer`, `researcher`, `explore` (all else denied). `bash`: everything allowed **except** `git push*`, `git reset --hard*`, `git branch -D*`, `git clean -f*`, `git push --force*`, `rm -rf*` → **ask** |
+| **`orchestrator`** | primary | Issue queue owner. Claims `todo` issues in numeric order, dispatches one `lead` per issue, and moves success to `review`. Does not implement or plan. | `edit`: **deny**; `todowrite`: allow; `task`: only `lead` (all else denied); `bash`: `*` → allow, with push/reset/branch-delete/clean/`rm -rf*`/publish and `issue_queue.py complete`/`reopen` → **ask** |
+| **`lead`** | all | Engineering lead. Takes feature-level objectives (directly or dispatched for one issue), runs the loop by delegating execution to subagents, coordinates from their reports, verifies, commits. | `todowrite`: allow; `task`: only `planner`, `coder`, `reviewer`, `researcher`, `explore` (all else denied). `bash`: everything allowed **except** `git push*`, `git reset --hard*`, `git branch -D*`, `git clean -f*`, `git push --force*`, `rm -rf*` → **ask** |
 | **`planner`** | subagent | Architecture & planning. Maps the codebase, produces file-level implementation plans with tests and risks. | `edit` allowed for plans/notes/docs (no source changes); `bash` unrestricted except destructive git/`rm -rf*`/`npm publish*` → **ask**; `webfetch` allowed |
 | **`coder`** | subagent | Implementation. Writes production-quality code, runs tests/lint, iterates until green. | Full `bash` access **except** `git push*`, `git reset --hard*`, `git clean -f*`, `git branch -D*` → **deny** |
 | **`reviewer`** | subagent | Independent review. Reads the diff with fresh eyes, checks correctness/security/regressions, runs tests itself. | `edit` allowed for non-code files (no fixes); `bash` unrestricted except destructive git/`rm -rf*`/`npm publish*` → **ask** |
@@ -128,13 +173,15 @@ gate), `git reset --hard*`, `git branch -D*`, `git clean -f*`,
 
 ## Commands
 
-User-facing entry points, all routed to `lead`:
+User-facing entry points: `/issues` routes to the `orchestrator`; the rest
+route to `lead`.
 
 | Command | Purpose |
 |---|---|
+| `/issues [status\|next\|all\|accept <id>\|reject <id>]` | Work the issue queue. Default is one issue: claim (`todo` → `inprogress`), dispatch one `lead`, stop at `review`. `all` processes sequentially but still stops every issue at `review`; `accept`/`reject` are the user's acceptance gate. |
 | `/feature <request>` | Start a feature-level request: "Add user authentication using OAuth…". Delegation-first: `lead` coordinates; `explore`/`planner`/`coder`/`reviewer`/`researcher` execute; independent tasks run in parallel worktrees. |
 | `/ship` | Close out current work: apply pending worktrees, verify, review (`explore` state check + `reviewer` pass + `coder` fixes), update docs, create routine commits. **Never pushes.** |
-| `/status` | Brief repo/git state: current branch, uncommitted changes, recent commits, work in progress, worktree state. |
+| `/status` | Brief repo/git state: current branch, uncommitted changes, recent commits, work in progress, worktree state, and issue queue status. |
 
 ## Worktree plugin (parallel isolation)
 
@@ -167,8 +214,13 @@ bash/`worktree_apply`, not a new terminal window.
 ├── PLAN.md                    # Implementation plan + phase status
 ├── README.md                  # This file
 ├── AGENTS.md                  # Workspace notes (project facts, conventions)
-├── opencode.json              # Config: constitution injection, default agent, permissions
+├── opencode.json              # Config: constitution injection, orchestrator default, depth 2, permissions
 ├── RESEARCH-grok-build.md     # Research: grok-build harness (parallel tasks, worktrees)
+├── issues/                    # Issue queue: todo / inprogress / review / completed
+│   └── README.md              # Queue contract, naming, transitions, CLI
+├── scripts/
+│   └── issue_queue.py         # Deterministic, locked, no-clobber queue moves
+├── tests/                     # Harness config + issue-queue tests (stdlib unittest)
 ├── plugin/
 │   └── opencode-worktree/
 │       ├── install.sh          # Full-harness or plugin-only installer
@@ -176,15 +228,15 @@ bash/`worktree_apply`, not a new terminal window.
 │           └── AGENTS.md       # Neutral workspace notes for new projects
 ├── .opencode/
 │   ├── constitution.md        # Harness constitution (injected into every agent)
-│   ├── agents/                # lead, planner, coder, reviewer, researcher
-│   ├── commands/              # feature, ship, status
+│   ├── agents/                # orchestrator, lead, planner, coder, reviewer, researcher
+│   ├── commands/              # issues, feature, ship, status
 │   ├── plugin/                # Installed worktree plugin (auto-loaded; copy of plugin/opencode-worktree/)
 │   └── worktree.jsonc         # Worktree plugin config
 ├── sandbox/                   # Training project (Python + unittest) used to validate the harness
 │   ├── AGENTS.md              # Sandbox-specific conventions (nested AGENTS.md test)
 │   └── README.md              # Sandbox "product intent"
 ├── docs/
-│   └── validation.md          # Scenario checklist + sign-off (scenarios 1–12)
+│   └── validation.md          # Scenario checklist + sign-off (scenarios 1–20)
 └── .gitignore
 ```
 
@@ -197,8 +249,9 @@ bash/`worktree_apply`, not a new terminal window.
 
 ## Quick start
 
-1. Install opencode (tested on opencode 1.18.18, Termux/Android; the plugin
-   install was re-verified on opencode 1.18.33, 2026-09-29).
+1. Install opencode **1.18.2 or newer** — depth-2 delegation
+   (`subagent_depth: 2`) needs it. Verified on 1.19.3 (Termux/Android); the
+   plugin install was re-verified on 1.18.33, 2026-09-29.
 2. Install the harness into a project from this checkout:
 
    ```bash
@@ -216,11 +269,19 @@ bash/`worktree_apply`, not a new terminal window.
    `--force` to back up and replace template-owned files. **Restart opencode**
    afterward — config is loaded once at startup, so restart after any change to
    `opencode.json`, agents, commands, skills, or plugins.
-3. Run the sandbox tests to confirm the environment:
-   `python3 -m unittest discover -s sandbox`
-4. Try it: `/feature Add a --version flag to the sandbox CLI, with tests.`
-5. Close out: `/ship` — then review the report (`Done / Verified / Decisions /
-   Needs you`).
+3. Run the harness and sandbox tests to confirm the environment:
+
+   ```bash
+   python3 -m unittest discover -s tests
+   python3 -m unittest discover -s sandbox
+   ```
+
+4. Try the issue queue: add `<NNN> <title>.md` under `issues/todo/`, then
+   `/issues` (or `/issues all`). Success stops at `review`; accept explicitly
+   with `/issues accept <id>`.
+5. Or run a direct feature: `/feature Add a --version flag to the sandbox CLI,
+   with tests.` Close out with `/ship` — then review the report (`Done /
+   Verified / Decisions / Needs you`).
 
 ## Validation status
 
@@ -232,12 +293,16 @@ The harness is validated end-to-end against `sandbox/` — see
   delegation depth, worktree create/merge-back/GC on Termux.
 - **Scenario 12** (constitution injection recitation) is applied and pending
   live verification after an opencode restart.
-- **Phase 5** (package as a copyable template) is the only remaining phase —
-  planned, not started.
+- **Scenarios 17–20** (depth-2 dispatch, numeric order + claim-before-dispatch,
+  failure stays `inprogress`, review acceptance gate) are configured and need a
+  live session after an opencode restart.
+- **Phase 5** (package as a copyable template) is the final phase; Phase 4.6's
+  structural items remain pending.
 
 ## Docs
 
 - `PLAN.md` — full implementation plan, decisions, phase status
+- `issues/README.md` — issue queue contract, naming, transitions, CLI
 - `docs/validation.md` — validation scenarios and sign-off
 - `RESEARCH-grok-build.md` — research on grok-build's parallel-task/worktree
   design and what was adopted

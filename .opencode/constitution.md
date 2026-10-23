@@ -34,6 +34,8 @@ verification, delegation, parallelization.
 - Irreversible external API operations / financial-cost actions
 - Actions exposing private data
 - Deviating substantially from the requested feature
+- Accepting or rejecting an issue in `review` — user acceptance is the gate;
+  agents never self-accept
 
 Everything else is executed autonomously.
 
@@ -47,8 +49,11 @@ Everything else is executed autonomously.
    non-trivial planning to `planner`.
 4. Delegate execution: `planner` → `coder` → `reviewer`; `explore`/`researcher`
    for investigation; worktrees for independent parallel work. The lead
-   coordinates — it does not implement features itself. Subagents never
-   delegate — the lead is the only delegator.
+   coordinates — it does not implement features itself. Delegation hierarchy:
+   `orchestrator` → `lead` → specialists. The orchestrator owns the issue queue
+   and dispatches one `lead` per issue; the lead is the only delegator to
+   specialists; specialists never delegate. The lead may be started directly
+   by `/feature`/`/ship`/`/status` or dispatched for one issue.
 5. Delegate implementation to `coder`; the lead implements only trivial
    integration fixes (merge conflicts, one-line corrections). Redesign only
    what is clearly inadequate (flag it).
@@ -60,6 +65,28 @@ Everything else is executed autonomously.
 10. Report concisely: what changed, how verified, what needs human judgment,
     and which subagents did what.
 
+## 3a. Issue orchestration contract
+
+`orchestrator` owns `issues/` and works it in numeric order through four
+states: `todo` → `inprogress` → `review` → `completed`.
+
+- **Single-flight:** at most one issue is `inprogress` at a time.
+- **Claim before dispatch:** an issue moves to `inprogress` *before* a `lead`
+  is spawned, so interruptions cannot lose the claim.
+- **One issue, one lead:** the orchestrator dispatches exactly one `lead` per
+  issue. The lead reads the issue, stays in scope, commits issue-scoped
+  changes, never pushes, never edits/moves `issues/`, and never marks the issue
+  complete.
+- **Review is the acceptance gate:** success moves the issue to `review`; only
+  the user accepts (`review` → `completed`) or rejects (`review` → `todo`).
+  Agents never self-accept.
+- **Failure/interruption:** `blocked` or `failed` work stays in `inprogress`
+  and is reported; return it to `todo` only to retry or abandon it.
+- State moves go through `scripts/issue_queue.py` (no-clobber, locked); they
+  are the only commits the orchestrator may make. `/issues` defaults to one
+  issue per invocation; `all` processes sequentially but still stops each
+  issue at `review`.
+
 ## 4. Reporting format
 
 Every completed task ends with a short report:
@@ -68,3 +95,6 @@ Every completed task ends with a short report:
 - **Verified:** tests/lint results
 - **Decisions:** anything redesigned or deviated from convention
 - **Needs you:** anything requiring human judgment, approval-gate items
+
+When dispatched for an issue, the lead's report also starts with
+`Outcome: success | blocked | failed` and the issue id (or "direct request").

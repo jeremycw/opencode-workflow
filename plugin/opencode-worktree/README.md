@@ -98,7 +98,9 @@ Run the installer from a harness checkout against your project:
 ```
 
 `TARGET_PROJECT_DIR` defaults to the current directory. The installer is
-non-interactive and idempotent.
+non-interactive and idempotent. Issue orchestration needs opencode **>= 1.18.2**
+for `subagent_depth: 2`; the installer sets it when absent and warns without
+overriding a lower target value.
 
 ### Modes and options
 
@@ -119,11 +121,16 @@ npm artifacts untracked.
 
 - `opencode.json` — merged into any existing config (see guarantees below)
 - `.opencode/constitution.md`
-- `.opencode/agents/{lead,planner,coder,reviewer,researcher}.md`
-- `.opencode/commands/{feature,ship,status}.md`
+- `.opencode/agents/{orchestrator,lead,planner,coder,reviewer,researcher}.md`
+- `.opencode/commands/{issues,feature,ship,status}.md`
 - `.opencode/worktree.jsonc` — skipped if one already exists
 - `AGENTS.md` from `templates/AGENTS.md` — skipped if one already exists
 - `docs/validation.md`
+- `scripts/issue_queue.py` — the locked, no-clobber issue queue helper
+- `issues/README.md`, `issues/.gitignore`, and
+  `issues/{todo,inprogress,review,completed}/.gitkeep` — scaffolding only;
+  existing project issue files/docs are kept unless `--force` (which backs up
+  and replaces)
 - `src/plugin/` → `.opencode/plugin/` (per file; unrelated plugins are kept)
 - `.opencode/.gitignore` (created or appended with missing entries; it ignores
   `node_modules`, `package.json`, `package-lock.json`, `bun.lock`, and
@@ -151,7 +158,13 @@ own installed `.opencode/plugin/`, or the plugin package's development files
 `opencode.json` is merged with **existing keys winning**:
 
 - Keys already in the target are kept, including unknown custom keys.
-- `default_agent` is never hijacked: it is set to `lead` only when absent.
+- `default_agent` is never hijacked: it is set to the harness default
+  (`orchestrator`) only when absent; an existing target value (including
+  `lead`) is preserved.
+- `subagent_depth` is copied (`2`) only when absent. An existing value is
+  preserved; if it is below `2`, the installer **warns** that depth-2 issue
+  orchestration needs `subagent_depth: 2` and `opencode >= 1.18.2`, but it does
+  not override the target.
 - `instructions` is unioned: `.opencode/constitution.md` is appended if the
   target already has an array, or the harness array is copied if absent.
 - `permission` is filled in only where keys are missing. Existing objects such
@@ -247,10 +260,17 @@ Runs on plugin load, before each `worktree_create`, and on `session.idle` — an
 
 ## Suggested workflow (agentic harness)
 
-Pair with a `lead` agent that delegates to worktrees in parallel:
+Pair with a two-level hierarchy: `orchestrator` (primary) owns `issues/` and
+dispatches one `lead` per issue; `lead` (mode `all`) delegates to worktrees in
+parallel; specialists never delegate.
 
+- `/issues` claims a `todo` issue (`todo` → `inprogress`) **before** spawning
+  `lead`; success lands in `review` for explicit **user** acceptance
+  (`/issues accept <id>` → `completed`). Failure stays `inprogress`.
 - Independent tasks → `worktree_create` each, then `worktree_apply(branch, mode: "merge")` back before the final report.
-- Flat delegation: subagents never spawn subagents.
+- Delegation depth is 2 (`subagent_depth: 2`): the orchestrator may task
+  `lead`; `lead` may task planners/coders/reviewers; specialists never spawn
+  subagents.
 - If an apply surfaces conflicts, resolve them with `worktree_resolve_conflicts(strategy: "ours"/"theirs")` and finish with `git commit`, or abort and re-plan.
 
 ## Security
