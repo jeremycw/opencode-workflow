@@ -85,23 +85,53 @@ four states: `todo` → `inprogress` → `review` → `completed`.
   claim. The orchestrator commits only that claim batch (issue-state moves)
   before dispatch so main is clean of issue moves for `worktree_apply`;
   unrelated WIP is checked and reported as blocked rather than committed.
+- **Branch per issue:** every issue has one canonical branch,
+  `issue/<zero-padded id>-<slug>`, resolved read-only with
+  `scripts/issue_queue.py branch "<exact filename>"` across all states. The
+  slug is the lowercased title with each run of non-`[a-z0-9]` characters
+  replaced by `-`, trimmed, capped at 60 characters (trimmed again), falling
+  back to `issue`. Two issues mapping to the same branch is an error. The
+  orchestrator resolves every group member's branch before claiming and passes
+  it to that issue's lead explicitly.
 - **One issue, one lead:** the orchestrator dispatches exactly one `lead` per
-  issue, in parallel, each in its own git worktree (`worktree_create` → work,
-  verify, and commit inside it → `worktree_apply` with merge →
-  `worktree_delete`). The lead reads the issue, stays in scope, commits
-  issue-scoped changes, never pushes, never edits/moves `issues/`, and never
-  marks the issue complete.
-- **Deferred finish:** no queue state is moved while a group lead may still be
-  applying a merge. The orchestrator collects all group lead reports first,
-  then finishes successes into `review`, leaves blocked/failed work in
+  issue, in parallel, each in its own git worktree
+  (`worktree_create` with the canonical branch and `baseBranch: "main"` → work,
+  verify, and commit inside it → leave the branch and worktree intact). The
+  lead does not apply or merge the worktree, does not merge to the default
+  branch (`main` here; `master` where that is the default), does not delete
+  the worktree, reads the issue, stays in scope, commits issue-scoped changes,
+  never pushes, never edits/moves `issues/`, and never marks the issue
+  complete.
+- **Deferred finish:** no queue state is moved while any group lead may still
+  be running. The orchestrator collects all group lead reports first, then
+  verifies each success: the canonical branch exists
+  (`git rev-parse --verify`) and has at least one commit beyond the default
+  branch (`git rev-list --count refs/heads/<default>..refs/heads/<branch>` >
+  0; `main` here, `master` where that is the default). A missing or
+  zero-commit branch leaves the issue `inprogress` and is reported blocked.
+  Verified
+  successes are `finish`ed into `review`; blocked/failed work stays
   `inprogress` (keeping the prefix active and blocking later groups until
-  returned/retried), and commits those issue-state moves together.
+  returned/retried); the issue-state moves are committed together. Finish
+  never merges and never deletes a worktree.
 - **Review is the acceptance gate:** success moves the issue to `review`; only
   the user accepts (`review` → `completed`) or rejects (`review` → `todo`).
   Agents never self-accept. When siblings share a prefix in `review`, the user
-  accepts or rejects by exact filename.
+  accepts or rejects by exact filename. On acceptance the orchestrator
+  preflights a clean main on the default branch, merges with `worktree_apply`
+  (`mode: "merge"`), runs both test suites, then completes the issue and
+  deletes the merged worktree/branch. A conflict aborts the merge, keeps the
+  issue in `review` and the worktree intact, and is reported; the orchestrator
+  never resolves conflicts and never resets main. On rejection/return it
+  deletes the worktree with `deleteBranch: "always"` and discards WIP *before*
+  the state move; an orphan branch without a worktree blocks instead.
 - **Failure/interruption:** `blocked` or `failed` work stays `inprogress`
-  and is reported; return it to `todo` only to retry or abandon it.
+  with its branch and worktree intact for inspection; return it to `todo` only
+  to retry or abandon it (cleanup before the move).
+- **Direct mode unchanged:** `/feature`, `/ship`, and `/status` start the
+  `lead` directly and may still create per-task worktrees, then apply and
+  delete them within the task. Only issue-dispatched leads defer merge and
+  cleanup to the orchestrator's acceptance gate.
 - State moves go through `scripts/issue_queue.py` (no-clobber, locked); they
   are the only commits the orchestrator may make. `/issues` defaults to one
   group per invocation; `all` processes groups sequentially but still stops

@@ -127,6 +127,109 @@ class LookupTests(QueueTestCase):
         self.assertEqual(queue.find("001 Second.md", self.root).state, "review")
 
 
+class BranchTests(QueueTestCase):
+    def test_slugify_spaces_and_punctuation(self):
+        self.assertEqual(queue.slugify("Use branches!"), "use-branches")
+        self.assertEqual(queue.slugify("  Fix: the  bug  "), "fix-the-bug")
+        self.assertEqual(queue.slugify("v1.2.3 release"), "v1-2-3-release")
+
+    def test_slugify_non_ascii_becomes_separator_run(self):
+        self.assertEqual(queue.slugify("Café déjà vu"), "caf-d-j-vu")
+
+    def test_slugify_caps_at_sixty_characters_and_trims(self):
+        self.assertEqual(queue.slugify("a" * 70), "a" * 60)
+        truncated = queue.slugify("x" * 59 + " yz")
+        self.assertEqual(truncated, "x" * 59)
+        self.assertEqual(len(truncated), 59)
+        self.assertFalse(truncated.endswith("-"))
+
+    def test_slugify_falls_back_when_nothing_usable_remains(self):
+        self.assertEqual(queue.slugify(""), "issue")
+        self.assertEqual(queue.slugify("!!!"), "issue")
+        self.assertEqual(queue.slugify("---"), "issue")
+
+    def test_issue_branch_is_canonical(self):
+        self.write("todo", "003 Use branches.md")
+        issue = queue.scan(self.root)[0]
+        self.assertEqual(issue.branch, "issue/003-use-branches")
+        self.assertEqual(queue.BRANCH_PREFIX, "issue/")
+        self.assertEqual(queue.SLUG_MAX, 60)
+        self.assertEqual(queue.SLUG_FALLBACK, "issue")
+
+    def test_branch_for_finds_review_and_completed_issues(self):
+        self.write("review", "002 Fix bug.md")
+        self.write("completed", "003 Done thing.md")
+
+        self.assertEqual(queue.branch_for("002", self.root), "issue/002-fix-bug")
+        self.assertEqual(
+            queue.branch_for("003 Done thing.md", self.root),
+            "issue/003-done-thing",
+        )
+
+    def test_branch_for_resolves_numeric_id_in_any_state(self):
+        self.write("completed", "004 Only member.md")
+        self.assertEqual(queue.branch_for("004", self.root), "issue/004-only-member")
+
+    def test_branch_for_unknown_id_is_an_error(self):
+        self.write("todo", "001 Known.md")
+        with self.assertRaises(queue.QueueError) as caught:
+            queue.branch_for("999", self.root)
+        self.assertIn("issue not found", str(caught.exception))
+
+    def test_branch_for_ambiguous_numeric_id_names_siblings(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("review", "001 Beta.md")
+
+        with self.assertRaises(queue.QueueError) as caught:
+            queue.branch_for("001", self.root)
+        message = str(caught.exception)
+        self.assertIn("001 Alpha.md", message)
+        self.assertIn("001 Beta.md", message)
+        self.assertIn("use the exact filename", message)
+
+    def test_branch_collision_errors_for_numeric_and_exact_filename(self):
+        self.write("todo", "001 Foo bar.md")
+        self.write("review", "001 Foo Bar.md")
+
+        for identifier in ("001", "001 Foo bar.md", "001 Foo Bar.md"):
+            with self.subTest(identifier=identifier):
+                with self.assertRaises(queue.QueueError) as caught:
+                    queue.branch_for(identifier, self.root)
+                message = str(caught.exception)
+                self.assertIn("issue/001-foo-bar", message)
+                self.assertIn("001 Foo bar.md", message)
+                self.assertIn("001 Foo Bar.md", message)
+
+    def test_branch_for_exact_filename_resolves_shared_prefix(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("review", "001 Beta.md")
+        self.assertEqual(
+            queue.branch_for("001 Beta.md", self.root), "issue/001-beta"
+        )
+
+    def test_cli_branch_prints_only_the_branch(self):
+        self.write("review", "001 Fix bug.md")
+        result = self.run_cli("branch", "001 Fix bug.md")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "issue/001-fix-bug")
+        self.assertEqual(result.stdout.strip().splitlines(), ["issue/001-fix-bug"])
+
+    def test_cli_branch_exit_codes(self):
+        self.write("todo", "001 Known.md")
+
+        unknown = self.run_cli("branch", "999")
+        self.assertEqual(unknown.returncode, 1)
+        self.assertTrue(unknown.stderr.startswith("error:"))
+
+        missing_argument = self.run_cli("branch")
+        self.assertEqual(missing_argument.returncode, 2)
+
+    def test_cli_help_lists_branch(self):
+        help_result = self.run_cli("--help")
+        self.assertEqual(help_result.returncode, 0)
+        self.assertIn("branch", help_result.stdout)
+
+
 class TransitionTests(QueueTestCase):
     def test_start_moves_and_single_flight_refuses_second_claim(self):
         self.write("todo", "001 First.md")
@@ -527,6 +630,7 @@ class StatusAndCliTests(QueueTestCase):
         self.assertEqual(help_result.returncode, 0)
         self.assertIn("next-group", help_result.stdout)
         self.assertIn("prefix group", help_result.stdout)
+        self.assertIn("branch", help_result.stdout)
 
     def test_cli_corrupt_multi_prefix_inprogress_exits_1(self):
         self.write("inprogress", "001 Alpha.md")

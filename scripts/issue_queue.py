@@ -15,6 +15,14 @@ alone is ambiguous when a group has more than one member; use the exact
 filename in that case. Files are ordered by the integer value of the prefix,
 then by filename, never lexicographically.
 
+Every issue also has one canonical git branch, derived deterministically from
+its filename: ``issue/<zero-padded id>-<slug>``. The slug is the lowercased
+title with every run of non ``[a-z0-9]`` characters replaced by ``-``, leading
+and trailing dashes trimmed, capped at 60 characters (trimmed again), and
+``issue`` when nothing usable remains. ``branch_for`` resolves an id or exact
+filename across **all** states and fails if two issues map to the same branch,
+because a branch must identify exactly one issue.
+
 Single-flight applies per prefix: at most one prefix may have issues in
 ``inprogress``, but every issue sharing that prefix may be claimed at once.
 Mutations are no-clobber moves and (when ``fcntl`` is available) hold an
@@ -49,9 +57,26 @@ IGNORED_NAMES = {"readme.md", ".gitkeep", ".gitignore"}
 ISSUE_RE = re.compile(r"^(\d{3,})\s+(.+)\.md$")
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent / "issues"
 
+BRANCH_PREFIX = "issue/"
+SLUG_MAX = 60
+SLUG_FALLBACK = "issue"
+_NON_SLUG = re.compile(r"[^a-z0-9]+")
+
 
 class QueueError(Exception):
     """A domain error (exit code 1), not a usage error."""
+
+
+def slugify(title: str) -> str:
+    """Return the deterministic branch slug for an issue title.
+
+    Lowercase, replace every run of characters outside ``[a-z0-9]`` with ``-``,
+    trim dashes, cap at :data:`SLUG_MAX` characters (trimming again), and fall
+    back to :data:`SLUG_FALLBACK` when nothing usable remains.
+    """
+    slug = _NON_SLUG.sub("-", title.lower()).strip("-")
+    slug = slug[:SLUG_MAX].rstrip("-")
+    return slug or SLUG_FALLBACK
 
 
 @dataclasses.dataclass(frozen=True)
@@ -73,6 +98,11 @@ class Issue:
     def sort_key(self) -> tuple[int, str]:
         """Numeric ordering, then filename as a stable tie-breaker."""
         return (self.number, self.filename)
+
+    @property
+    def branch(self) -> str:
+        """Canonical git branch name for this issue (no collision check)."""
+        return f"{BRANCH_PREFIX}{self.id}-{slugify(self.title)}"
 
 
 def _root(root: Optional[os.PathLike[str] | str]) -> Path:
@@ -307,6 +337,47 @@ def find(identifier: str, root: Optional[os.PathLike[str] | str] = None) -> Issu
         return _find_unlocked(identifier, base)
 
 
+def _branch_map_unlocked(base: Path) -> dict[str, Issue]:
+    """Map every issue's canonical branch to its issue, rejecting collisions."""
+    branches: dict[str, Issue] = {}
+    for issue in _scan_unlocked(base):
+        previous = branches.get(issue.branch)
+        if previous is not None:
+            raise QueueError(
+                f"duplicate issue branch {issue.branch!r}: "
+                f"{previous.filename} and {issue.filename}; "
+                "rename one issue so each branch is unique"
+            )
+        branches[issue.branch] = issue
+    return branches
+
+
+def _branch_for_unlocked(identifier: str, base: Path) -> str:
+    branches = _branch_map_unlocked(base)
+    matches = _matches(identifier, list(branches.values()))
+    if not matches:
+        raise QueueError(f"issue not found: {identifier.strip()}")
+    if len(matches) > 1:
+        names = ", ".join(issue.filename for issue in matches)
+        raise QueueError(
+            f"ambiguous issue id {identifier.strip()!r}: {names}; "
+            "use the exact filename"
+        )
+    return matches[0].branch
+
+
+def branch_for(identifier: str, root: Optional[os.PathLike[str] | str] = None) -> str:
+    """Return the canonical branch for an issue in any state.
+
+    A numeric id is ambiguous when several issues share that prefix; use the
+    exact filename in that case. Two issues mapping to the same branch is an
+    error, named with both filenames and the branch.
+    """
+    base = _root(root)
+    with _locked(base, shared=True):
+        return _branch_for_unlocked(identifier, base)
+
+
 def next_group(root: Optional[os.PathLike[str] | str] = None) -> list[Issue]:
     """Return the claimable todo prefix group.
 
@@ -513,13 +584,21 @@ def return_to_todo(identifier: str, root: Optional[os.PathLike[str] | str] = Non
 # CLI ----------------------------------------------------------------------
 
 
+_ID_HELP = (
+    "numeric prefix (e.g. 001) when unambiguous, or exact filename "
+    "such as '001 Fix bug.md'"
+)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Manage the issues/ queue: numeric prefix groups in ascending order, "
             "single-flight per prefix (same-prefix issues may run in parallel), "
             "no-clobber moves. Numeric ids are ambiguous when a group has several "
-            "members; use the exact filename."
+            "members; use the exact filename. Every issue maps to one canonical "
+            "git branch issue/<id>-<slug>; 'branch' resolves it across all states "
+            "and collisions are an error."
         )
     )
     parser.add_argument(
@@ -541,6 +620,14 @@ def _parser() -> argparse.ArgumentParser:
         "next-group",
         help="show every claimable todo issue in the current prefix group",
     )
+    branch_parser = subparsers.add_parser(
+        "branch",
+        help=(
+            "print an issue's canonical git branch (issue/<id>-<slug>); resolves "
+            "across all states"
+        ),
+    )
+    branch_parser.add_argument("id", help=_ID_HELP)
 
     for name, help_text in (
         (
@@ -553,13 +640,7 @@ def _parser() -> argparse.ArgumentParser:
         ("return", "return an inprogress issue to todo (inprogress -> todo)"),
     ):
         command = subparsers.add_parser(name, help=help_text)
-        command.add_argument(
-            "id",
-            help=(
-                "numeric prefix (e.g. 001) when unambiguous, or exact filename "
-                "such as '001 Fix bug.md'"
-            ),
-        )
+        command.add_argument("id", help=_ID_HELP)
 
     return parser
 
@@ -601,6 +682,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 base = _root(root)
                 for issue in group:
                     print(_relpath(issue.path, base))
+            return 0
+
+        if args.command == "branch":
+            print(branch_for(args.id, root))
             return 0
 
         if args.command == "start":
