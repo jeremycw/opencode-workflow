@@ -117,12 +117,25 @@ four states: `todo` → `inprogress` → `review` → `completed`.
 - **Review is the acceptance gate:** success moves the issue to `review`; only
   the user accepts (`review` → `completed`) or rejects (`review` → `todo`).
   Agents never self-accept. When siblings share a prefix in `review`, the user
-  accepts or rejects by exact filename. On acceptance the orchestrator
-  preflights a clean main on the default branch, merges with `worktree_apply`
-  (`mode: "merge"`), runs both test suites, then completes the issue and
-  deletes the merged worktree/branch. A conflict aborts the merge, keeps the
-  issue in `review` and the worktree intact, and is reported; the orchestrator
-  never resolves conflicts and never resets main. On rejection/return it
+  accepts or rejects by exact filename. On explicit acceptance the orchestrator
+  preflights a clean main on the default branch, records `PRE_MERGE`, and
+  merges with `worktree_apply` (`mode: "merge"`). A clean merge is verified
+  (`git merge-base --is-ancestor`), both test suites run, then the issue is
+  completed and the merged worktree/branch deleted. On conflicts the
+  orchestrator does not abort; it dispatches exactly one fresh `lead`
+  "acceptance conflict resolver" in the main checkout to resolve in-scope
+  conflicts while preserving both sides' intent, with both test suites and an
+  independent `reviewer` approving; the resolver creates the merge commit with
+  `git commit --no-edit`, then the orchestrator independently verifies the
+  merge commit (`HEAD^2`), branch ancestry, clean status, and both suites
+  before completing and deleting. Out-of-scope/ambiguous conflicts or resolver
+  failure: while the acceptance merge is still provably in progress
+  (`MERGE_HEAD` matches this branch's tip and `HEAD` is `PRE_MERGE`), the
+  orchestrator aborts only that merge, restores the pre-merge main, and keeps
+  the issue in `review` with its branch/worktree intact; if the resolver
+  already committed, it cannot abort — it reports failed with main merged and
+  never resets/amends. It never resolves conflicts itself. One acceptance runs
+  at a time. On rejection/return it
   deletes the worktree with `deleteBranch: "always"` and discards WIP *before*
   the state move; an orphan branch without a worktree blocks instead.
 - **Failure/interruption:** `blocked` or `failed` work stays `inprogress`

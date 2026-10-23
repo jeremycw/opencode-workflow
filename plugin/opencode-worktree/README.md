@@ -274,7 +274,13 @@ worktrees in parallel; specialists never delegate.
   `review` with branch and worktree intact for explicit **user** acceptance;
   the orchestrator then applies it on acceptance (`worktree_apply` in `merge`
   mode, both suites green, `complete`, then `worktree_delete` with
-  `deleteBranch: "auto"`). Failure stays `inprogress` with the worktree intact.
+  `deleteBranch: "auto"`). If the merge conflicts, it dispatches one fresh
+  `lead` acceptance conflict resolver in the main checkout (both suites +
+  independent `reviewer`, then `git commit --no-edit`), verifies the merge
+  commit, completes, and deletes. Lead dispatch/implementation failure stays
+  `inprogress` with the worktree intact; an acceptance failure keeps the issue
+  in `review` (aborting only a still-in-progress acceptance merge, or reporting
+  failed with main merged if the resolver already committed).
 - Direct-mode independent tasks (`/feature`-style) are **unchanged**:
   `worktree_create` each, then `worktree_apply(branch, mode: "merge")` back
   before the final report and `worktree_delete` after verification. Only an
@@ -283,7 +289,7 @@ worktrees in parallel; specialists never delegate.
 - Delegation depth is 2 (`subagent_depth: 2`): the orchestrator may task
   `lead`; `lead` may task planners/coders/reviewers; specialists never spawn
   subagents.
-- If an apply surfaces conflicts, resolve them with `worktree_resolve_conflicts(strategy: "ours"/"theirs")` and finish with `git commit`, or abort and re-plan.
+- For **direct-mode** applies only, if an apply surfaces conflicts, resolve them with `worktree_resolve_conflicts(strategy: "ours"/"theirs")` and finish with `git commit`, or abort and re-plan. Acceptance conflicts instead use the selective acceptance conflict resolver above (no wholesale `ours`/`theirs`).
 
 ## Security
 

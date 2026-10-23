@@ -1,5 +1,5 @@
 ---
-description: "Work the issue queue: status | next | all | accept <id> | reject <id>. Default is one numeric prefix group per invocation, claimed and committed before dispatch to one lead per issue in parallel worktrees, then finished only after all group leads report, and stopped at review for user acceptance."
+description: "Work the issue queue: status | next | all | accept <id> | reject <id>. Default is one numeric prefix group per invocation, claimed and committed before dispatch to one lead per issue in parallel worktrees, then finished only after all group leads report, and stopped at review for user acceptance. On explicit accept the orchestrator merges the canonical branch and, on conflicts, dispatches a fresh lead acceptance conflict resolver in the main checkout, verifies the merge, then completes."
 agent: orchestrator
 ---
 
@@ -72,23 +72,81 @@ Interpret the arguments as one of:
   groups. Do not start the next group until the user returns/retries (or
   abandons via `return`) the blocked/failed members. Every issue still stops at
   `review`; never auto-accept and never skip the acceptance gate.
-- `accept <id>` — the user has accepted a `review` issue. Compute its branch
+- `accept <id>` — the user has accepted a `review` issue. This is the only
+  merge path and it runs only on explicit user acceptance. Compute its branch
   with `python3 scripts/issue_queue.py branch "<exact filename>"` (exact
   filename when a prefix is shared; if ambiguous, list the `review` filenames
-  and ask the user which one). Preflight that the main checkout is on the
-  default branch (`main` here; `master` where that is the default) and that
-  `git status --porcelain` is empty; otherwise keep it in `review` and report
-  blocked. Then `worktree_apply(branch, mode: "merge")`. On conflicts — or a
-  real merge in progress (`MERGE_HEAD` exists) — abort with
-  `worktree_resolve_conflicts(strategy: "abort")`, keep the issue in `review`,
-  keep the worktree intact, and report blocked with the conflicted file list.
-  Never resolve conflicts yourself and never reset. Clean merge -> run BOTH
-  suites on main (`python3 -m unittest discover -s tests` and
-  `python3 -m unittest discover -s sandbox`). Red -> keep `review`, report
-  blocked, do NOT reset main. Green -> `python3 scripts/issue_queue.py complete
-  "<exact filename>"`, commit only the queue move, then
-  `worktree_delete(branch, deleteBranch: "auto")` (the merged branch is
-  deleted). A deletion failure after completion is non-fatal and reported.
+  and ask the user which one). Verify the main checkout is on the default
+  branch (`main` here; `master` where that is the default) and that the branch
+  exists (`git rev-parse --verify --quiet refs/heads/<branch>`); otherwise keep
+  it in `review` and report blocked. Record `PRE_MERGE=$(git rev-parse HEAD)`.
+  Probe `MERGE_HEAD` FIRST, before the clean-status gate: a crashed acceptance
+  merge leaves unmerged paths, so `git status --porcelain` is dirty and a
+  clean-status check would make recovery unreachable. If `MERGE_HEAD` exists:
+  - if `git rev-parse MERGE_HEAD` equals
+    `git rev-parse refs/heads/<branch>` (provably this branch's crashed
+    acceptance merge), abort it with
+    `worktree_resolve_conflicts(strategy: "abort")`, then confirm `MERGE_HEAD`
+    is gone and `git status --porcelain` is clean and report blocked so the
+    user can retry accept; if the abort or that confirmation fails, do NOT
+    reset/clean and report failed with the exact state;
+  - otherwise report blocked and do NOT abort a merge this invocation did not
+    start.
+  Only when no `MERGE_HEAD` exists, require clean `git status --porcelain`;
+  otherwise keep it in `review` and report blocked. Then
+  `worktree_apply(branch, mode: "merge")` on clean main.
+  - Hard error with no conflicts: keep the issue in `review`. Abort only a
+    merge this invocation started, and only while provenance holds —
+    `MERGE_HEAD` exists, `git rev-parse MERGE_HEAD` equals the canonical branch
+    tip, and `HEAD` equals `PRE_MERGE` — with
+    `worktree_resolve_conflicts(strategy: "abort")`; otherwise do not abort.
+    Report blocked; never reset.
+  - Clean merge: require `git merge-base --is-ancestor refs/heads/<branch>
+    HEAD` and clean `git status --porcelain`. If either check fails, keep the
+    issue in `review`, report blocked, and never reset/delete/complete (do not
+    run the suites or complete). Otherwise run BOTH suites on main
+    (`python3 -m unittest discover -s tests` and
+    `python3 -m unittest discover -s sandbox`). Green ->
+    `python3 scripts/issue_queue.py complete "<exact filename>"`, commit only
+    the queue move, then `worktree_delete(branch, deleteBranch: "auto")` (the
+    merged branch is deleted). Red -> keep `review`, report blocked, do NOT
+    reset or delete (main is already merged). Do not require `HEAD^2` on a
+    clean/fast-forward merge.
+  - Conflicts: do NOT abort. Confirm `MERGE_HEAD` exists and
+    `git diff --name-only --diff-filter=U` is non-empty; capture the
+    conflicted file list. Dispatch exactly one fresh `lead` labelled
+    "acceptance conflict resolver", working in the MAIN checkout (not a
+    worktree), passing the exact issue filename (read-only), the canonical
+    branch, the conflicted files, and `PRE_MERGE`. This is the ONLY dispatch
+    allowed while main is mid-merge (it is your own acceptance merge, not
+    unrelated WIP); do no other queue or `/ship` work while the resolver holds
+    main (one acceptance at a time). Never edit or resolve conflicts yourself
+    (you have `edit` denied).
+    - Resolver success: independently gate on no `MERGE_HEAD`; HEAD is a merge
+      commit (`git rev-parse --verify --quiet HEAD^2`); the canonical branch is
+      an ancestor of HEAD (`git merge-base --is-ancestor`); clean
+      `git status --porcelain`; on the default branch; then re-run BOTH suites.
+      All pass -> `complete`, queue-only commit,
+      `worktree_delete(branch, deleteBranch: "auto")`. Any failure -> keep the
+      issue in `review`, keep the worktree/branch, report blocked, and never
+      reset/delete/complete.
+    - Resolver blocked/failed/missing report: abort only while the acceptance
+      merge this invocation started is provably still in progress — `MERGE_HEAD`
+      exists AND `git rev-parse MERGE_HEAD` equals the canonical branch tip AND
+      `HEAD` equals `PRE_MERGE`. The one-acceptance-at-a-time rule plus this
+      provenance check protects a live merge.
+      - If provenance fails (or no `MERGE_HEAD` exists, for example the
+        resolver already committed), do NOT abort; report failed with the
+        exact state.
+      - If provenance holds, abort with
+        `worktree_resolve_conflicts(strategy: "abort")`, then verify
+        `MERGE_HEAD` is gone, `git status --porcelain` is clean, and `HEAD`
+        equals `PRE_MERGE`. If that restoration check passes, report blocked,
+        keep the issue in `review`, and keep the worktree/branch intact. If the
+        abort or that restoration check fails, report failed with the exact
+        state.
+      In all cases never reset/clean/delete.
+  A deletion failure after completion is non-fatal and reported.
 - `reject <id>` — reject a `review` issue. Resolve its branch, then clean up
   BEFORE the state move with `worktree_delete(branch, deleteBranch: "always",
   commitPending: false)` to discard abandoned WIP. If the tool says no

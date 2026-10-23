@@ -107,9 +107,11 @@ agent when to use it.
     refs/heads/<default>..refs/heads/<branch>` > 0) but does not merge. The
     orchestrator merges
     with `worktree_apply` only after user acceptance, runs both suites, then
-    completes and deletes the merged worktree/branch. Rejection/return cleans
-    up the worktree/branch before the state move. Direct-mode worktrees are
-    unchanged.
+    completes and deletes the merged worktree/branch; acceptance conflicts are
+    resolved by a dispatched fresh `lead` acceptance conflict resolver (issue
+    004), then the merge is re-verified before completion. Rejection/return
+    cleans up the worktree/branch before the state move. Direct-mode worktrees
+    are unchanged.
 
 ## 4. Target architecture
 
@@ -937,20 +939,39 @@ refs/heads/<default>..refs/heads/<branch>` > 0; zero-commit = blocked) but
 does not merge.
 On user acceptance the orchestrator preflights a clean main on the default
 branch, `worktree_apply`s in merge mode, runs both test suites, completes the
-issue, then deletes the merged worktree/branch. A conflict or red suite keeps
-the issue in `review`; the orchestrator never resolves conflicts or resets.
-Rejection/`return` deletes the worktree/branch (discarding WIP) before the state
-move; an orphan branch without a worktree blocks. Direct-mode `/feature`-style
-worktrees still apply and delete within the task.
+issue, then deletes the merged worktree/branch. A red suite keeps the issue in
+`review`; the orchestrator never resets. Rejection/`return` deletes the
+worktree/branch (discarding WIP) before the state move; an orphan branch
+without a worktree blocks. Direct-mode `/feature`-style worktrees still apply
+and delete within the task.
+
+**Decision update (2026-10-23, issue 004):** acceptance conflict resolution now
+happens instead of aborting. On the orchestrator's own acceptance merge,
+conflicts are left in place and exactly one fresh `lead` "acceptance conflict
+resolver" is dispatched in the main checkout (never a worktree) with the exact
+issue filename (read-only), canonical branch, conflicted files, and
+`PRE_MERGE`. The resolver preserves both sides' intent, stages only in-scope
+resolutions, passes both suites and an independent `reviewer`, and creates the
+merge commit with `git commit --no-edit`. The orchestrator independently gates
+on `MERGE_HEAD` gone, `HEAD^2`, branch ancestry, clean status, and both suites
+before completing and deleting. Out-of-scope/ambiguous conflicts or resolver
+failure: while the acceptance merge is still provably in progress
+(`MERGE_HEAD` matches this branch's tip and `HEAD` is `PRE_MERGE`), abort only
+that merge, restore `PRE_MERGE`, and keep the issue in `review` with
+branch/worktree intact; if the resolver already committed, it cannot abort, so
+report failed with main merged and never reset/amend. The orchestrator never
+resets, never resolves conflicts itself, and one acceptance runs at a time. The
+clean/fast-forward merge path (no `HEAD^2` required) and "agents never
+self-accept" are unchanged.
 
 ### 4.7.1 Changes
 
 | File | Change |
 |---|---|
-| `.opencode/agents/orchestrator.md` | **NEW** primary agent: `edit: deny`, `todowrite: allow`, `task` allowlist only `lead`, bash queue/git safety gates; resolves canonical branches before claiming, claims every group member before dispatch, launches one `lead` per issue in parallel worktrees, verifies success branches at `finish` (no merge), and only merges via `worktree_apply` after acceptance; never implements/plans |
-| `.opencode/agents/lead.md` | `mode: all`, `todowrite: allow`; prompt covers direct start vs. dispatched-for-one-issue, canonical-branch worktree create/work/commit inside, no apply/merge/delete when dispatched (direct-mode worktrees unchanged), issue scope rules, `Outcome:` + issue id + branch/worktree/head SHA in reports |
+| `.opencode/agents/orchestrator.md` | **NEW** primary agent: `edit: deny`, `todowrite: allow`, `task` allowlist only `lead`, bash queue/git safety gates; resolves canonical branches before claiming, claims every group member before dispatch, launches one `lead` per issue in parallel worktrees, verifies success branches at `finish` (no merge), and only merges via `worktree_apply` after acceptance; on conflicts dispatches one fresh `lead` acceptance conflict resolver in main and gates on `MERGE_HEAD` gone, `HEAD^2`, branch ancestry, clean status, and both suites; aborts/restores only while its own acceptance merge is provably in progress (post-commit failure reports main merged); never implements/plans/resolves conflicts itself |
+| `.opencode/agents/lead.md` | `mode: all`, `todowrite: allow`; prompt covers direct start vs. dispatched-for-one-issue vs. orchestrator acceptance conflict resolver, canonical-branch worktree create/work/commit inside, no apply/merge/delete when dispatched (direct-mode worktrees unchanged), resolver work in the main checkout on the in-progress merge only, issue scope rules, `Outcome:` + issue id + branch/worktree/head SHA in reports |
 | `opencode.json` | `default_agent: orchestrator`; `subagent_depth: 2` (opencode >= 1.18.2) |
-| `.opencode/commands/issues.md` | **NEW** `/issues [status\|next\|all\|accept <id>\|reject <id>]`, one prefix group by default, `all` walks groups sequentially and stops each issue at review |
+| `.opencode/commands/issues.md` | **NEW** `/issues [status\|next\|all\|accept <id>\|reject <id>]`, one prefix group by default, `all` walks groups sequentially and stops each issue at review; `accept` merges and, on conflicts, dispatches the acceptance conflict resolver before verifying and completing |
 | `.opencode/commands/status.md` | Adds queue status |
 | `scripts/issue_queue.py` | **NEW** stdlib queue helper: prefix groups, single-flight per prefix, exact-filename disambiguation, `next-group`, canonical branch resolution (`branch`, `slugify`, `Issue.branch`, collision = error), no-clobber moves, `fcntl` lock, `--root`, CLI exit codes 0/1/2 |
 | `issues/` | `README.md` contract (including canonical branches and the acceptance merge), `.gitignore` (`.lock`), four state dirs with `.gitkeep` |
@@ -997,11 +1018,28 @@ worktrees still apply and delete within the task.
   `/issues reject` (exact filename when a prefix is shared); agents never
   self-accept.
 - Acceptance preflights a clean main on the default branch (`main` here;
-  `master` where that is the default), merges the canonical branch with
-  `worktree_apply(mode: "merge")`, runs both test suites, then `complete`s the
-  issue and deletes the merged worktree/branch. Conflicts or a red suite keep
-  the issue in `review`; the orchestrator never resolves conflicts and never
-  resets main.
+  `master` where that is the default), records `PRE_MERGE`, and merges the
+  canonical branch with `worktree_apply(mode: "merge")`. A clean merge is
+  verified (`git merge-base --is-ancestor`; no `HEAD^2` requirement for a
+  fast-forward), both test suites run, then the issue is `complete`d and the
+  merged worktree/branch deleted. On conflicts the orchestrator does not abort:
+  it dispatches exactly one fresh `lead` "acceptance conflict resolver" in the
+  main checkout with the exact issue filename (read-only), canonical branch,
+  conflicted files, and `PRE_MERGE`. The resolver resolves only in-scope
+  conflicts while preserving both intents, runs both suites, obtains an
+  independent `reviewer` approval, and creates the merge commit with
+  `git commit --no-edit`; the orchestrator then independently gates on
+  `MERGE_HEAD` gone, `HEAD^2`, branch ancestry, clean `git status --porcelain`,
+  and both suites before completing and deleting. Out-of-scope/ambiguous
+  conflicts or resolver failure: while the orchestrator's acceptance merge is
+  still provably in progress (`MERGE_HEAD` matches this branch's tip and `HEAD`
+  is `PRE_MERGE`), abort only that merge, verify restoration to `PRE_MERGE`,
+  and keep the issue in `review` with branch/worktree intact; if the resolver
+  already committed, it cannot abort, so report failed with main merged and
+  never reset/amend. The orchestrator never resets main, never resolves
+  conflicts itself, and runs one acceptance at a time. A red suite after a
+  clean merge or a failed resolver gate also keeps the issue in `review`
+  without resetting or deleting.
 - Failure/interruption leaves the issue in `inprogress` with its branch and
   worktree intact, keeps blocking later groups, and is reported. Rejection and
   `return` delete the worktree/branch (`deleteBranch: "always"`,
@@ -1017,11 +1055,14 @@ worktrees still apply and delete within the task.
 Scenarios 17–24 added to `docs/validation.md` (depth-2 dispatch, numeric order
 + claim-before-dispatch, failure stays `inprogress`, acceptance gate, parallel
 same-prefix group, canonical branch lifecycle, no-merge `finish`, acceptance
-merge). They are marked `needs user` pending a live session after an opencode
-restart. Queue mechanics — including prefix groups, exact-filename
-disambiguation, `next-group` determinism, slug/branch resolution, and
-collision/rejection behavior — are covered deterministically by
-`python3 -m unittest discover -s tests`.
+merge and conflict resolution). They are marked `needs user` pending a live
+session after an opencode restart. Queue mechanics — including prefix groups,
+exact-filename disambiguation, `next-group` determinism, slug/branch
+resolution, and collision/rejection behavior — are covered deterministically
+by `python3 -m unittest discover -s tests`; the acceptance conflict resolution
+prompt contract (resolver dispatch, verification gates, abort/restore, and
+one-acceptance-at-a-time) is likewise covered structurally in
+`tests/test_harness_config.py`, with live model behavior still `needs user`.
 
 ---
 
