@@ -41,11 +41,10 @@ already exists, do NOT create, reuse, or delete anything: report
 `Outcome: blocked` and stop. Otherwise
 `worktree_create(branch: "<canonical>", baseBranch: "main")`. Do the full loop
 (inspect, plan, implement, verify, review, document, commit) **inside that
-worktree**, and run the tests there. Do NOT call `worktree_apply`, do NOT
-merge into the default branch (`main` here; `master` where that is the
-default), and do NOT delete the
-worktree: leave the branch and worktree intact for the orchestrator to merge
-only after user acceptance. On `blocked`/`failed`, also leave both intact for
+worktree**, and run the tests there. Do NOT call `worktree_apply`.
+Do not merge into the default branch (`main` here; `master` where that is the
+default), and do NOT delete the worktree: leave the branch and worktree intact
+for the orchestrator to merge only after user acceptance. On `blocked`/`failed`, also leave both intact for
 inspection. Report `Outcome`, the issue id, the branch, the worktree path, and
 the head SHA.
 
