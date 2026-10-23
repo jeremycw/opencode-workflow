@@ -66,13 +66,21 @@ class ParsingTests(QueueTestCase):
         self.assertEqual([issue.id for issue in queue.scan(self.root)], ["001", "002", "010"])
         self.assertEqual(queue.next_issue(self.root).id, "001")
 
-    def test_duplicate_prefix_across_states_is_an_error(self):
+    def test_same_prefix_distinct_filenames_are_allowed(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("todo", "001 Beta.md")
+
+        issues = queue.scan(self.root)
+        self.assertEqual([issue.filename for issue in issues], ["001 Alpha.md", "001 Beta.md"])
+        self.assertEqual([issue.id for issue in issues], ["001", "001"])
+
+    def test_duplicate_exact_filename_across_states_is_an_error(self):
         self.write("todo", "001 Same.md")
-        self.write("review", "001 Different title.md")
+        self.write("review", "001 Same.md")
 
         with self.assertRaises(queue.QueueError) as caught:
             queue.scan(self.root)
-        self.assertIn("duplicate issue prefix 001", str(caught.exception))
+        self.assertIn("duplicate issue filename", str(caught.exception))
 
     def test_nonconforming_markdown_is_reported_not_fatal(self):
         self.write("todo", "001 Good.md")
@@ -107,8 +115,16 @@ class LookupTests(QueueTestCase):
     def test_duplicate_prefix_makes_lookup_ambiguous(self):
         self.write("todo", "001 First.md")
         self.write("review", "001 Second.md")
-        with self.assertRaises(queue.QueueError):
+
+        with self.assertRaises(queue.QueueError) as caught:
             queue.find("001", self.root)
+        message = str(caught.exception)
+        self.assertIn("001 First.md", message)
+        self.assertIn("001 Second.md", message)
+        self.assertIn("use the exact filename", message)
+
+        self.assertEqual(queue.find("001 First.md", self.root).state, "todo")
+        self.assertEqual(queue.find("001 Second.md", self.root).state, "review")
 
 
 class TransitionTests(QueueTestCase):
@@ -179,21 +195,194 @@ class TransitionTests(QueueTestCase):
         queue.start("010", self.root)
         self.assertTrue((self.root / "inprogress" / "010 Tenth.md").is_file())
 
+    def test_start_refuses_later_prefix_when_group_is_all_todo(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("todo", "001 Beta.md")
+        self.write("todo", "002 Later.md")
+
+        with self.assertRaises(queue.QueueError) as caught:
+            queue.start("002", self.root)
+        self.assertIn("start 001 first", str(caught.exception))
+        self.assertEqual(len(queue.issues_in("todo", self.root)), 3)
+        self.assertEqual(queue.issues_in("inprogress", self.root), [])
+
+    def test_return_numeric_ambiguity_with_two_inprogress_siblings(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("todo", "001 Beta.md")
+        queue.start("001 Alpha.md", self.root)
+        queue.start("001 Beta.md", self.root)
+
+        with self.assertRaises(queue.QueueError) as caught:
+            queue.return_to_todo("001", self.root)
+        message = str(caught.exception)
+        self.assertIn("001 Alpha.md", message)
+        self.assertIn("001 Beta.md", message)
+        self.assertIn("use the exact filename", message)
+
+        moved = queue.return_to_todo("001 Alpha.md", self.root)
+        self.assertEqual(moved.name, "001 Alpha.md")
+        self.assertEqual(moved.parent.name, "todo")
+
+    def test_reopen_numeric_ambiguity_with_two_review_siblings(self):
+        self.write("review", "001 Alpha.md")
+        self.write("review", "001 Beta.md")
+
+        with self.assertRaises(queue.QueueError) as caught:
+            queue.reopen("001", self.root)
+        message = str(caught.exception)
+        self.assertIn("001 Alpha.md", message)
+        self.assertIn("001 Beta.md", message)
+        self.assertIn("use the exact filename", message)
+
+        moved = queue.reopen("001 Alpha.md", self.root)
+        self.assertEqual(moved.name, "001 Alpha.md")
+        self.assertEqual(moved.parent.name, "todo")
+
     def test_moves_never_clobber(self):
         source = self.write("todo", "001 Issue.md", "source\n")
         destination = self.write("inprogress", "001 Issue.md", "destination\n")
 
-        # scan() rejects duplicate prefixes first, so exercise the move helper
-        # directly to prove the no-clobber guarantee itself.
+        # scan() rejects the identical filename in two states first, so exercise
+        # the move helper directly to prove the no-clobber guarantee itself.
         with self.assertRaises(queue.QueueError) as caught:
             queue._move_no_clobber(source, destination, self.root)
         self.assertIn("refusing to overwrite", str(caught.exception))
         self.assertEqual(source.read_text(encoding="utf-8"), "source\n")
         self.assertEqual(destination.read_text(encoding="utf-8"), "destination\n")
 
-        # The high-level command also refuses the ambiguous queue.
+        # The high-level command also refuses: the identical filename exists
+        # in both todo and inprogress.
         with self.assertRaises(queue.QueueError):
             queue.start("001", self.root)
+
+    def test_same_prefix_group_starts_concurrently(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("todo", "001 Beta.md")
+        self.write("todo", "002 Later.md")
+
+        queue.start("001 Alpha.md", self.root)
+        queue.start("001 Beta.md", self.root)
+        self.assertEqual(
+            sorted(issue.filename for issue in queue.issues_in("inprogress", self.root)),
+            ["001 Alpha.md", "001 Beta.md"],
+        )
+
+        with self.assertRaises(queue.QueueError) as caught:
+            queue.start("002", self.root)
+        self.assertIn("already in progress", str(caught.exception))
+        self.assertTrue((self.root / "todo" / "002 Later.md").is_file())
+
+        queue.finish("001 Alpha.md", self.root)
+        queue.finish("001 Beta.md", self.root)
+        queue.start("002", self.root)
+        self.assertTrue((self.root / "inprogress" / "002 Later.md").is_file())
+
+    def test_ambiguous_numeric_start_names_both_siblings(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("todo", "001 Beta.md")
+
+        with self.assertRaises(queue.QueueError) as caught:
+            queue.start("001", self.root)
+        message = str(caught.exception)
+        self.assertIn("001 Alpha.md", message)
+        self.assertIn("001 Beta.md", message)
+        self.assertIn("use the exact filename", message)
+        self.assertEqual(len(queue.issues_in("todo", self.root)), 2)
+        self.assertEqual(queue.issues_in("inprogress", self.root), [])
+
+    def test_numeric_start_resolves_within_expected_state(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("todo", "001 Beta.md")
+
+        queue.start("001 Alpha.md", self.root)
+        # Only Beta remains a todo 001, so the numeric id is unambiguous here.
+        moved = queue.start("001", self.root)
+        self.assertEqual(moved.name, "001 Beta.md")
+        self.assertEqual(moved.parent.name, "inprogress")
+
+    def test_finish_ambiguous_and_resolves_by_filename(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("todo", "001 Beta.md")
+        queue.start("001 Alpha.md", self.root)
+        queue.start("001 Beta.md", self.root)
+
+        with self.assertRaises(queue.QueueError) as caught:
+            queue.finish("001", self.root)
+        message = str(caught.exception)
+        self.assertIn("001 Alpha.md", message)
+        self.assertIn("001 Beta.md", message)
+        self.assertIn("use the exact filename", message)
+
+        queue.finish("001 Alpha.md", self.root)
+        moved = queue.finish("001", self.root)
+        self.assertEqual(moved.name, "001 Beta.md")
+        self.assertEqual(moved.parent.name, "review")
+
+    def test_state_scoped_transition_ignores_sibling_in_another_state(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("todo", "001 Beta.md")
+        queue.start("001 Alpha.md", self.root)
+        queue.start("001 Beta.md", self.root)
+        queue.finish("001 Alpha.md", self.root)
+
+        # Alpha is in review and Beta is inprogress: each numeric transition
+        # scopes to its expected state instead of becoming ambiguous.
+        accepted = queue.complete("001", self.root)
+        self.assertEqual(accepted.name, "001 Alpha.md")
+        self.assertEqual(accepted.parent.name, "completed")
+
+        reviewed = queue.finish("001", self.root)
+        self.assertEqual(reviewed.name, "001 Beta.md")
+        self.assertEqual(reviewed.parent.name, "review")
+
+
+class NextGroupTests(QueueTestCase):
+    def test_returns_every_member_of_the_lowest_todo_group(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("todo", "001 Beta.md")
+        self.write("todo", "002 Later.md")
+
+        self.assertEqual(
+            [issue.filename for issue in queue.next_group(self.root)],
+            ["001 Alpha.md", "001 Beta.md"],
+        )
+
+    def test_returns_only_the_remaining_member_after_a_claim(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("todo", "001 Beta.md")
+        queue.start("001 Alpha.md", self.root)
+
+        self.assertEqual(
+            [issue.filename for issue in queue.next_group(self.root)],
+            ["001 Beta.md"],
+        )
+
+    def test_returns_empty_when_the_active_group_is_fully_claimed(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("todo", "001 Beta.md")
+        self.write("todo", "002 Later.md")
+        queue.start("001 Alpha.md", self.root)
+        queue.start("001 Beta.md", self.root)
+
+        self.assertEqual(queue.next_group(self.root), [])
+        # next_issue stays informational and still reports the next todo.
+        self.assertEqual(queue.next_issue(self.root).filename, "002 Later.md")
+
+    def test_returns_empty_for_an_empty_queue(self):
+        self.assertEqual(queue.next_group(self.root), [])
+
+    def test_corrupt_inprogress_prefixes_raise(self):
+        self.write("inprogress", "001 Alpha.md")
+        self.write("inprogress", "002 Beta.md")
+        self.write("todo", "003 Later.md")
+
+        with self.assertRaises(queue.QueueError) as caught:
+            queue.next_group(self.root)
+        self.assertIn("span multiple prefixes", str(caught.exception))
+
+        with self.assertRaises(queue.QueueError) as caught:
+            queue.start("003", self.root)
+        self.assertIn("span multiple prefixes", str(caught.exception))
 
 
 class MoveTests(QueueTestCase):
@@ -292,6 +481,65 @@ class StatusAndCliTests(QueueTestCase):
         listed = self.run_cli("list", "todo")
         self.assertEqual(listed.returncode, 0)
         self.assertEqual(listed.stdout.strip().splitlines(), ["issues/todo/002 Second.md"])
+
+    def test_cli_next_group_and_exact_filename_claims(self):
+        self.write("todo", "001 Alpha.md")
+        self.write("todo", "001 Beta.md")
+        self.write("todo", "002 Later.md")
+
+        group = self.run_cli("next-group")
+        self.assertEqual(group.returncode, 0, group.stderr)
+        self.assertEqual(
+            group.stdout.strip().splitlines(),
+            ["issues/todo/001 Alpha.md", "issues/todo/001 Beta.md"],
+        )
+
+        ambiguous = self.run_cli("start", "001")
+        self.assertEqual(ambiguous.returncode, 1)
+        self.assertIn("001 Alpha.md", ambiguous.stderr)
+        self.assertIn("001 Beta.md", ambiguous.stderr)
+        self.assertIn("use the exact filename", ambiguous.stderr)
+
+        started = self.run_cli("start", "001 Alpha.md")
+        self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertIn("issues/inprogress/001 Alpha.md", started.stdout)
+
+        remaining = self.run_cli("next-group")
+        self.assertEqual(remaining.returncode, 0, remaining.stderr)
+        self.assertEqual(
+            remaining.stdout.strip().splitlines(),
+            ["issues/todo/001 Beta.md"],
+        )
+
+        second = self.run_cli("start", "001 Beta.md")
+        self.assertEqual(second.returncode, 0, second.stderr)
+
+        blocked = self.run_cli("start", "002")
+        self.assertEqual(blocked.returncode, 1)
+        self.assertIn("already in progress", blocked.stderr)
+
+        fully_claimed = self.run_cli("next-group")
+        self.assertEqual(fully_claimed.returncode, 0, fully_claimed.stderr)
+        self.assertEqual(fully_claimed.stdout.strip(), "none")
+
+    def test_cli_help_mentions_next_group_and_prefix_groups(self):
+        help_result = self.run_cli("--help")
+        self.assertEqual(help_result.returncode, 0)
+        self.assertIn("next-group", help_result.stdout)
+        self.assertIn("prefix group", help_result.stdout)
+
+    def test_cli_corrupt_multi_prefix_inprogress_exits_1(self):
+        self.write("inprogress", "001 Alpha.md")
+        self.write("inprogress", "002 Beta.md")
+        self.write("todo", "003 Later.md")
+
+        group = self.run_cli("next-group")
+        self.assertEqual(group.returncode, 1)
+        self.assertIn("span multiple prefixes", group.stderr)
+
+        status = self.run_cli("status")
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("inprogress: 2", status.stdout)
 
     @unittest.skipIf(fcntl is None, "fcntl unavailable on this platform")
     def test_mutations_block_on_the_queue_lock(self):

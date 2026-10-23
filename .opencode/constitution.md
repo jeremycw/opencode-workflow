@@ -67,25 +67,45 @@ Everything else is executed autonomously.
 
 ## 3a. Issue orchestration contract
 
-`orchestrator` owns `issues/` and works it in numeric order through four
-states: `todo` → `inprogress` → `review` → `completed`.
+`orchestrator` owns `issues/` and works it in numeric prefix groups through
+four states: `todo` → `inprogress` → `review` → `completed`.
 
-- **Single-flight:** at most one issue is `inprogress` at a time.
-- **Claim before dispatch:** an issue moves to `inprogress` *before* a `lead`
-  is spawned, so interruptions cannot lose the claim.
+- **Prefix groups:** the numeric prefix names a group. Groups are worked in
+  ascending numeric order, and every `todo` issue sharing the current prefix
+  belongs to the same group. The filename (prefix + title) is the unique issue
+  identity: a numeric id is unambiguous only when the prefix has one member.
+  State-scoped transitions resolve a numeric id within their expected state;
+  when siblings share a prefix, use the exact filename (an identical filename
+  across states is an error).
+- **Single-flight per prefix:** at most one numeric prefix may have
+  `inprogress` issues at a time, but any number of issues sharing that prefix
+  may be claimed and worked concurrently. Distinct prefixes are sequential.
+- **Claim before dispatch:** every `todo` member of the current group moves to
+  `inprogress` *before* any `lead` is spawned, so interruptions cannot lose the
+  claim. The orchestrator commits only that claim batch (issue-state moves)
+  before dispatch so main is clean of issue moves for `worktree_apply`;
+  unrelated WIP is checked and reported as blocked rather than committed.
 - **One issue, one lead:** the orchestrator dispatches exactly one `lead` per
-  issue. The lead reads the issue, stays in scope, commits issue-scoped
-  changes, never pushes, never edits/moves `issues/`, and never marks the issue
-  complete.
+  issue, in parallel, each in its own git worktree (`worktree_create` → work,
+  verify, and commit inside it → `worktree_apply` with merge →
+  `worktree_delete`). The lead reads the issue, stays in scope, commits
+  issue-scoped changes, never pushes, never edits/moves `issues/`, and never
+  marks the issue complete.
+- **Deferred finish:** no queue state is moved while a group lead may still be
+  applying a merge. The orchestrator collects all group lead reports first,
+  then finishes successes into `review`, leaves blocked/failed work in
+  `inprogress` (keeping the prefix active and blocking later groups until
+  returned/retried), and commits those issue-state moves together.
 - **Review is the acceptance gate:** success moves the issue to `review`; only
   the user accepts (`review` → `completed`) or rejects (`review` → `todo`).
-  Agents never self-accept.
-- **Failure/interruption:** `blocked` or `failed` work stays in `inprogress`
+  Agents never self-accept. When siblings share a prefix in `review`, the user
+  accepts or rejects by exact filename.
+- **Failure/interruption:** `blocked` or `failed` work stays `inprogress`
   and is reported; return it to `todo` only to retry or abandon it.
 - State moves go through `scripts/issue_queue.py` (no-clobber, locked); they
   are the only commits the orchestrator may make. `/issues` defaults to one
-  issue per invocation; `all` processes sequentially but still stops each
-  issue at `review`.
+  group per invocation; `all` processes groups sequentially but still stops
+  each issue at `review`.
 
 ## 4. Reporting format
 

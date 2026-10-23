@@ -22,8 +22,9 @@ Phase 5). Nothing is promoted to the global opencode config.
                              ▼
               ┌───────────────────────────────┐
               │     orchestrator (primary)     │
-              │  owns issues/, claims before   │
-              │  dispatch, one lead per issue  │
+              │  owns issues/, claims a prefix │
+              │  group, one lead per issue in  │
+              │  parallel worktrees            │
               └───────────────┬───────────────┘
                               │  task: only lead
                               ▼
@@ -120,22 +121,41 @@ todo ──start──► inprogress ──finish──► review ──complete
                   └──return──► todo       └──reopen──► todo
 ```
 
-- **Numeric order:** issues are worked by integer prefix (`002` before `010`).
-- **Single-flight:** at most one issue is `inprogress` at a time.
-- **Claim before dispatch:** the orchestrator moves an issue to `inprogress`
-  *before* spawning one `lead` subagent for it.
+- **Prefix groups:** the integer prefix names a group; groups are worked in
+  ascending order (`001` before `002`, `002` before `010`). Same-prefix files
+  with distinct titles (e.g. `001 Alpha.md`, `001 Beta.md`) form one parallel
+  group.
+- **Single-flight per prefix:** at most one prefix may have `inprogress`
+  issues, but every issue sharing that prefix may run concurrently; distinct
+  prefixes stay sequential. A group is not finished while any member remains
+  `inprogress`; blocked/failed members keep it active and block later groups
+  until returned/retried.
+- **Claim the group before dispatch:** the orchestrator moves every `todo`
+  member of the group to `inprogress` *before* spawning one `lead` per issue.
+  If a claim fails, or unrelated WIP dirties main, it returns the just-claimed
+  issues to `todo` and reports instead of dispatching.
+- **One issue, one worktree:** each lead works in its own
+  `worktree_create` -> work/verify/commit -> `worktree_apply` merge ->
+  `worktree_delete`; the orchestrator dispatches the leads in parallel.
+- **Clean main for merges:** the orchestrator commits only the claim batch
+  before dispatch (so main is clean of issue moves), checks for unrelated WIP
+  before dispatching, collects every group lead report, then commits the
+  success `finish` moves in one batch.
+- **One queue owner:** run one `/issues` invocation at a time; concurrent
+  invocations can split a group because there is no atomic group-claim command.
 - **Review is the acceptance gate:** a successful lead report moves the issue
   to `review`; only the user accepts (`completed`) or rejects (`todo`). Agents
-  never self-accept.
-- **Failure/interruption:** `blocked`/`failed` work stays `inprogress` and is
-  reported; `return` puts it back in `todo` to retry or abandon.
+  never self-accept; with same-prefix siblings, accept/reject by exact filename.
+- **Failure/interruption:** `blocked`/`failed` work stays `inprogress`, keeps
+  blocking later groups, and is reported; `return` puts it back in `todo` to
+  retry or abandon.
 
 ```bash
-python3 scripts/issue_queue.py status      # queue counts + issue paths
-python3 scripts/issue_queue.py next        # lowest-numbered todo issue
-python3 scripts/issue_queue.py start 001   # claim before dispatch
-python3 scripts/issue_queue.py finish 001  # success -> review
-python3 scripts/issue_queue.py complete 001 # user acceptance only
+python3 scripts/issue_queue.py status          # queue counts + issue paths
+python3 scripts/issue_queue.py next-group      # every claimable todo in the current group
+python3 scripts/issue_queue.py start "001 A.md" # claim before dispatch (exact filename)
+python3 scripts/issue_queue.py finish "001 A.md" # success -> review
+python3 scripts/issue_queue.py complete "001 A.md" # user acceptance only
 ```
 
 See `issues/README.md` for the full contract and file naming rules. State moves
@@ -149,7 +169,7 @@ dispatched by the orchestrator. The rest are subagents.
 
 | Agent | Mode | Role | Access |
 |---|---|---|---|
-| **`orchestrator`** | primary | Issue queue owner. Claims `todo` issues in numeric order, dispatches one `lead` per issue, and moves success to `review`. Does not implement or plan. | `edit`: **deny**; `todowrite`: allow; `task`: only `lead` (all else denied); `bash`: `*` → allow, with push/reset/branch-delete/clean/`rm -rf*`/publish and `issue_queue.py complete`/`reopen` → **ask** |
+| **`orchestrator`** | primary | Issue queue owner. Works numeric prefix groups in ascending order, claims every member of the active group before dispatch, sends one `lead` per issue in parallel worktrees, and moves success to `review`. Does not implement or plan. | `edit`: **deny**; `todowrite`: allow; `task`: only `lead` (all else denied); `bash`: `*` → allow, with push/reset/branch-delete/clean/`rm -rf*`/publish and `issue_queue.py complete`/`reopen` → **ask** |
 | **`lead`** | all | Engineering lead. Takes feature-level objectives (directly or dispatched for one issue), runs the loop by delegating execution to subagents, coordinates from their reports, verifies, commits. | `todowrite`: allow; `task`: only `planner`, `coder`, `reviewer`, `researcher`, `explore` (all else denied). `bash`: everything allowed **except** `git push*`, `git reset --hard*`, `git branch -D*`, `git clean -f*`, `git push --force*`, `rm -rf*` → **ask** |
 | **`planner`** | subagent | Architecture & planning. Maps the codebase, produces file-level implementation plans with tests and risks. | `edit` allowed for plans/notes/docs (no source changes); `bash` unrestricted except destructive git/`rm -rf*`/`npm publish*` → **ask**; `webfetch` allowed |
 | **`coder`** | subagent | Implementation. Writes production-quality code, runs tests/lint, iterates until green. | Full `bash` access **except** `git push*`, `git reset --hard*`, `git clean -f*`, `git branch -D*` → **deny** |
@@ -178,7 +198,7 @@ route to `lead`.
 
 | Command | Purpose |
 |---|---|
-| `/issues [status\|next\|all\|accept <id>\|reject <id>]` | Work the issue queue. Default is one issue: claim (`todo` → `inprogress`), dispatch one `lead`, stop at `review`. `all` processes sequentially but still stops every issue at `review`; `accept`/`reject` are the user's acceptance gate. |
+| `/issues [status\|next\|all\|accept <id>\|reject <id>]` | Work the issue queue. Default is one prefix group: claim every member (`todo` → `inprogress`) before dispatch, send one `lead` per issue in parallel worktrees, stop at `review`. `all` processes groups sequentially but still stops every issue at `review`; `accept`/`reject` are the user's acceptance gate (exact filename when a prefix is shared). |
 | `/feature <request>` | Start a feature-level request: "Add user authentication using OAuth…". Delegation-first: `lead` coordinates; `explore`/`planner`/`coder`/`reviewer`/`researcher` execute; independent tasks run in parallel worktrees. |
 | `/ship` | Close out current work: apply pending worktrees, verify, review (`explore` state check + `reviewer` pass + `coder` fixes), update docs, create routine commits. **Never pushes.** |
 | `/status` | Brief repo/git state: current branch, uncommitted changes, recent commits, work in progress, worktree state, and issue queue status. |
@@ -236,7 +256,7 @@ bash/`worktree_apply`, not a new terminal window.
 │   ├── AGENTS.md              # Sandbox-specific conventions (nested AGENTS.md test)
 │   └── README.md              # Sandbox "product intent"
 ├── docs/
-│   └── validation.md          # Scenario checklist + sign-off (scenarios 1–20)
+│   └── validation.md          # Scenario checklist + sign-off (scenarios 1–21)
 └── .gitignore
 ```
 
@@ -293,9 +313,9 @@ The harness is validated end-to-end against `sandbox/` — see
   delegation depth, worktree create/merge-back/GC on Termux.
 - **Scenario 12** (constitution injection recitation) is applied and pending
   live verification after an opencode restart.
-- **Scenarios 17–20** (depth-2 dispatch, numeric order + claim-before-dispatch,
-  failure stays `inprogress`, review acceptance gate) are configured and need a
-  live session after an opencode restart.
+- **Scenarios 17–21** (depth-2 dispatch, numeric order + claim-before-dispatch,
+  failure stays `inprogress`, review acceptance gate, parallel same-prefix
+  groups) are configured and need a live session after an opencode restart.
 - **Phase 5** (package as a copyable template) is the final phase; Phase 4.6's
   structural items remain pending.
 

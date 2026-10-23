@@ -8,11 +8,19 @@ Issues live in one of four state directories under ``issues/``::
     issues/review/<NNN> <title>.md
     issues/completed/<NNN> <title>.md
 
-The numeric prefix is the issue id. Files are ordered by the integer value of
-that prefix, never lexicographically. Mutations are no-clobber moves and (when
-``fcntl`` is available) hold an exclusive lock on ``issues/.lock`` so two
-agents cannot claim work at the same time. Reads hold a shared lock so they
-never observe an issue in two states mid-move.
+The numeric prefix is the issue's *group*: issues sharing a prefix may be
+claimed and worked in parallel, while distinct prefixes stay sequential. The
+filename (prefix + title) is the issue's unique identity, so a numeric prefix
+alone is ambiguous when a group has more than one member; use the exact
+filename in that case. Files are ordered by the integer value of the prefix,
+then by filename, never lexicographically.
+
+Single-flight applies per prefix: at most one prefix may have issues in
+``inprogress``, but every issue sharing that prefix may be claimed at once.
+Mutations are no-clobber moves and (when ``fcntl`` is available) hold an
+exclusive lock on ``issues/.lock`` so two agents cannot claim work at the same
+time. Reads hold a shared lock so they never observe an issue in two states
+mid-move.
 
 Exit codes: 0 success, 1 domain error, 2 argparse usage error.
 """
@@ -143,7 +151,7 @@ def nonconforming(root: Optional[os.PathLike[str] | str] = None) -> list[tuple[s
 
 def _scan_unlocked(base: Path) -> list[Issue]:
     issues: list[Issue] = []
-    seen: dict[int, Issue] = {}
+    seen: dict[str, Issue] = {}
 
     for state in STATES:
         directory = _state_dir(base, state)
@@ -165,24 +173,25 @@ def _scan_unlocked(base: Path) -> list[Issue]:
                 state=state,
                 path=entry,
             )
-            previous = seen.get(number)
+            previous = seen.get(entry.name)
             if previous is not None:
                 raise QueueError(
-                    "duplicate issue prefix "
-                    f"{number:03d}: {_relpath(previous.path, base)} and "
+                    "duplicate issue filename: "
+                    f"{_relpath(previous.path, base)} and "
                     f"{_relpath(issue.path, base)}"
                 )
-            seen[number] = issue
+            seen[entry.name] = issue
             issues.append(issue)
 
     return sorted(issues, key=lambda issue: issue.sort_key)
 
 
 def scan(root: Optional[os.PathLike[str] | str] = None) -> list[Issue]:
-    """Scan every state and return issues in numeric order.
+    """Scan every state and return issues ordered by prefix, then filename.
 
-    Raises :class:`QueueError` if two files share a numeric prefix (across any
-    state), because ids would be ambiguous.
+    Same-prefix issues are allowed (they form a parallel group). Raises
+    :class:`QueueError` if the exact same filename appears in two states, which
+    would make issue identity ambiguous.
     """
     base = _root(root)
     with _locked(base, shared=True):
@@ -202,35 +211,129 @@ def issues_in(state: str, root: Optional[os.PathLike[str] | str] = None) -> list
         return _issues_in_unlocked(state, base)
 
 
-def _find_unlocked(identifier: str, base: Path) -> Issue:
-    issues = _scan_unlocked(base)
+def _matches(identifier: str, issues: Sequence[Issue]) -> list[Issue]:
+    """Resolve ``identifier`` against ``issues``: numeric id or exact filename."""
     identifier = identifier.strip()
     if not identifier:
         raise QueueError("issue id is empty")
-
     if identifier.isdigit():
         number = int(identifier)
-        matches = [issue for issue in issues if issue.number == number]
-    else:
-        matches = [issue for issue in issues if issue.filename == identifier]
+        return [issue for issue in issues if issue.number == number]
+    return [issue for issue in issues if issue.filename == identifier]
 
+
+def _find_unlocked(identifier: str, base: Path) -> Issue:
+    issues = _scan_unlocked(base)
+    matches = _matches(identifier, issues)
     if not matches:
-        raise QueueError(f"issue not found: {identifier}")
+        raise QueueError(f"issue not found: {identifier.strip()}")
     if len(matches) > 1:
         names = ", ".join(issue.filename for issue in matches)
-        raise QueueError(f"ambiguous issue id {identifier!r}: {names}")
+        raise QueueError(
+            f"ambiguous issue id {identifier.strip()!r}: {names}; "
+            "use the exact filename"
+        )
     return matches[0]
 
 
+def _find_in_state_unlocked(
+    identifier: str,
+    expected_state: str,
+    base: Path,
+    action: Optional[str] = None,
+) -> Issue:
+    """Resolve an issue that must be in ``expected_state``.
+
+    Numeric ids are matched within the expected state first, so a sibling with
+    the same prefix in another state never makes a valid transition ambiguous.
+    If several issues share the prefix in the expected state, the caller must
+    pass the exact filename.
+    """
+    issues = _scan_unlocked(base)
+    matches = _matches(identifier, issues)
+    identifier = identifier.strip()
+    in_expected = [issue for issue in matches if issue.state == expected_state]
+    suffix = f" for {action}" if action else " for this transition"
+
+    if len(in_expected) == 1:
+        return in_expected[0]
+    if len(in_expected) > 1:
+        names = ", ".join(issue.filename for issue in in_expected)
+        raise QueueError(
+            f"ambiguous issue id {identifier!r} in {expected_state}: {names}; "
+            "use the exact filename"
+        )
+    if not matches:
+        raise QueueError(f"issue not found: {identifier}")
+
+    if len(matches) == 1:
+        issue = matches[0]
+        raise QueueError(
+            f"issue {issue.id} is in {issue.state}, expected {expected_state}{suffix}"
+        )
+    listing = ", ".join(f"{issue.filename} ({issue.state})" for issue in matches)
+    raise QueueError(
+        f"issue {identifier!r} is not in {expected_state}{suffix}: {listing}; "
+        "use the exact filename"
+    )
+
+
+def _active_prefix_unlocked(issues: Sequence[Issue]) -> Optional[int]:
+    """Return the one prefix with ``inprogress`` issues, or ``None``.
+
+    Raises when the queue is corrupt and has in-progress issues from more than
+    one prefix. Read-only commands deliberately do not call this so a corrupt
+    queue stays inspectable and repairable.
+    """
+    active = [issue for issue in issues if issue.state == "inprogress"]
+    prefixes = sorted({issue.number for issue in active})
+    if len(prefixes) > 1:
+        names = ", ".join(issue.filename for issue in active)
+        raise QueueError(
+            f"inprogress issues span multiple prefixes: {names}; "
+            "only one prefix may be in progress at a time"
+        )
+    return prefixes[0] if prefixes else None
+
+
 def find(identifier: str, root: Optional[os.PathLike[str] | str] = None) -> Issue:
-    """Find an issue by numeric id or exact filename."""
+    """Find an issue by numeric id or exact filename.
+
+    A numeric id is ambiguous when several issues share that prefix; use the
+    exact filename in that case.
+    """
     base = _root(root)
     with _locked(base, shared=True):
         return _find_unlocked(identifier, base)
 
 
+def next_group(root: Optional[os.PathLike[str] | str] = None) -> list[Issue]:
+    """Return the claimable todo prefix group.
+
+    While a prefix is active, only its remaining ``todo`` members are returned
+    (possibly none). Otherwise the whole lowest ``todo`` prefix is returned.
+    Returns ``[]`` when there is no todo work.
+    """
+    base = _root(root)
+    with _locked(base, shared=True):
+        issues = _scan_unlocked(base)
+        active_prefix = _active_prefix_unlocked(issues)
+        todo = [issue for issue in issues if issue.state == "todo"]
+        if active_prefix is not None:
+            return [issue for issue in todo if issue.number == active_prefix]
+        if not todo:
+            return []
+        first_prefix = todo[0].number
+        return [issue for issue in todo if issue.number == first_prefix]
+
+
 def next_issue(root: Optional[os.PathLike[str] | str] = None) -> Optional[Issue]:
-    """Return the lowest-numbered todo issue, or ``None`` when the queue is empty."""
+    """Return the lowest-numbered todo issue, or ``None`` when the queue is empty.
+
+    Informational only: while a prefix group is active the lowest todo issue
+    may belong to a later group and is not claimable. Orchestration should use
+    :func:`next_group`.
+    """
     base = _root(root)
     with _locked(base, shared=True):
         todo = _issues_in_unlocked("todo", base)
@@ -339,12 +442,7 @@ def _transition(
 ) -> Path:
     base = ensure_layout(root)
     with _locked(base):
-        issue = _find_unlocked(identifier, base)
-        if issue.state != expected:
-            raise QueueError(
-                f"issue {issue.id} is in {issue.state}, expected {expected} "
-                f"for this transition"
-            )
+        issue = _find_in_state_unlocked(identifier, expected, base)
         destination = _state_dir(base, target) / issue.filename
         return _move_no_clobber(issue.path, destination, base)
 
@@ -352,24 +450,29 @@ def _transition(
 def _start(identifier: str, root: Optional[os.PathLike[str] | str] = None) -> Path:
     base = ensure_layout(root)
     with _locked(base):
-        issue = _find_unlocked(identifier, base)
-        if issue.state != "todo":
-            raise QueueError(
-                f"issue {issue.id} is in {issue.state}, expected todo for start"
-            )
-        todo = _issues_in_unlocked("todo", base)
-        if todo and todo[0].number != issue.number:
-            raise QueueError(
-                f"issue {issue.id} is not next in numeric order: "
-                f"start {todo[0].id} first"
-            )
-        active = _issues_in_unlocked("inprogress", base)
-        if active:
-            current = active[0]
-            raise QueueError(
-                "another issue is already in progress: "
-                f"{current.filename} (only one issue may be in progress at a time)"
-            )
+        issue = _find_in_state_unlocked(identifier, "todo", base, action="start")
+        issues = _scan_unlocked(base)
+        active_prefix = _active_prefix_unlocked(issues)
+        if active_prefix is not None:
+            if issue.number != active_prefix:
+                active = [member for member in issues if member.state == "inprogress"]
+                names = ", ".join(member.filename for member in active)
+                raise QueueError(
+                    f"prefix {active_prefix:03d} is already in progress: {names}; "
+                    "only issues sharing that numeric prefix may start until the "
+                    "group is finished"
+                )
+        else:
+            todo = [member for member in issues if member.state == "todo"]
+            first = todo[0]
+            if issue.number != first.number:
+                members = ", ".join(
+                    member.filename for member in todo if member.number == first.number
+                )
+                raise QueueError(
+                    f"issue {issue.id} is not next in numeric order: "
+                    f"start {first.id} first: {members}"
+                )
         destination = _state_dir(base, "inprogress") / issue.filename
         return _move_no_clobber(issue.path, destination, base)
 
@@ -378,7 +481,12 @@ def _start(identifier: str, root: Optional[os.PathLike[str] | str] = None) -> Pa
 
 
 def start(identifier: str, root: Optional[os.PathLike[str] | str] = None) -> Path:
-    """Claim a todo issue: todo -> inprogress (single-flight enforced)."""
+    """Claim a todo issue: todo -> inprogress.
+
+    Single-flight is per numeric prefix: any number of todo issues sharing the
+    one active prefix may be claimed, but a later prefix must wait. A numeric
+    id is ambiguous when siblings share the prefix; pass the exact filename.
+    """
     return _start(identifier, root)
 
 
@@ -407,7 +515,12 @@ def return_to_todo(identifier: str, root: Optional[os.PathLike[str] | str] = Non
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Manage the issues/ queue: numeric order, single-flight, no-clobber moves."
+        description=(
+            "Manage the issues/ queue: numeric prefix groups in ascending order, "
+            "single-flight per prefix (same-prefix issues may run in parallel), "
+            "no-clobber moves. Numeric ids are ambiguous when a group has several "
+            "members; use the exact filename."
+        )
     )
     parser.add_argument(
         "--root",
@@ -420,17 +533,33 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status", help="show counts and issues per state")
     list_parser = subparsers.add_parser("list", help="list issues in one state")
     list_parser.add_argument("state", choices=STATES)
-    subparsers.add_parser("next", help="show the next todo issue")
+    subparsers.add_parser(
+        "next",
+        help="show the lowest todo issue (informational; may not be claimable)",
+    )
+    subparsers.add_parser(
+        "next-group",
+        help="show every claimable todo issue in the current prefix group",
+    )
 
     for name, help_text in (
-        ("start", "claim a todo issue (todo -> inprogress)"),
+        (
+            "start",
+            "claim a todo issue (todo -> inprogress; same-prefix members may run in parallel)",
+        ),
         ("finish", "send an inprogress issue to review (inprogress -> review)"),
         ("complete", "accept a reviewed issue (review -> completed)"),
         ("reopen", "reject a reviewed issue (review -> todo)"),
         ("return", "return an inprogress issue to todo (inprogress -> todo)"),
     ):
         command = subparsers.add_parser(name, help=help_text)
-        command.add_argument("id", help="numeric prefix (e.g. 001) or exact filename")
+        command.add_argument(
+            "id",
+            help=(
+                "numeric prefix (e.g. 001) when unambiguous, or exact filename "
+                "such as '001 Fix bug.md'"
+            ),
+        )
 
     return parser
 
@@ -462,6 +591,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print("none")
             else:
                 print(_relpath(issue.path, _root(root)))
+            return 0
+
+        if args.command == "next-group":
+            group = next_group(root)
+            if not group:
+                print("none")
+            else:
+                base = _root(root)
+                for issue in group:
+                    print(_relpath(issue.path, base))
             return 0
 
         if args.command == "start":

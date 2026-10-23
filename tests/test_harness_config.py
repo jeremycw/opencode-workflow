@@ -158,6 +158,30 @@ class ConfigTests(unittest.TestCase):
         for token in ("orchestrator", "issues/", "subagent_depth"):
             self.assertIn(token, plugin_readme)
 
+    def test_parallel_prefix_group_contract_is_documented(self):
+        orchestrator = (AGENTS / "orchestrator.md").read_text(encoding="utf-8")
+        for token in (
+            "next-group",
+            "exact filename",
+            "worktree_create",
+            "worktree_apply",
+            "worktree_delete",
+            "in parallel",
+        ):
+            self.assertIn(token, orchestrator)
+
+        _, issues_text = command("issues")
+        for token in ("next-group", "every todo", "exact filename", "worktree", "in parallel"):
+            self.assertIn(token, issues_text)
+
+        issues_readme = (ROOT / "issues" / "README.md").read_text(encoding="utf-8")
+        for token in ("same-prefix", "next-group", "worktree", "exact filename"):
+            self.assertIn(token, issues_readme)
+
+        constitution = (ROOT / ".opencode" / "constitution.md").read_text(encoding="utf-8")
+        self.assertIn("single-flight per prefix", constitution.lower())
+        self.assertIn("worktree", constitution.lower())
+
     def assertLowerIn(self, needle: str, haystack: str) -> None:
         self.assertIn(needle, haystack)
 

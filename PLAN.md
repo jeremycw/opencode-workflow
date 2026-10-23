@@ -94,8 +94,9 @@ agent when to use it.
     (opencode >= 1.18.2) enables the second level; `lead` becomes `mode: all`
     with `todowrite: allow` so it works both as a direct command target and as
     a task target. State moves go through `scripts/issue_queue.py`
-    (numeric order, single-flight, claim-before-dispatch, no-clobber, locked).
-    `review` is the user acceptance gate; agents never self-accept.
+    (numeric prefix groups, single-flight per prefix, claim-before-dispatch,
+    no-clobber, locked). Same-prefix issues run concurrently, each in its own
+    worktree; `review` is the user acceptance gate; agents never self-accept.
 
 ## 4. Target architecture
 
@@ -897,40 +898,72 @@ rule. **Still pending user decision:** structural enforcement (deny `edit`/
 
 Goal: add a persistent issue queue above the lead so the user can hand over a
 backlog, not just one feature. An `orchestrator` claims `issues/todo` work in
-numeric order, dispatches exactly one `lead` per issue, and parks success in
-`issues/review` for explicit user acceptance.
+numeric prefix groups, dispatches one `lead` per issue in parallel worktrees,
+and parks success in `issues/review` for explicit user acceptance.
+
+**Decision update (2026-10-22, issue 002):** numeric prefixes are parallel
+groups. Same-prefix issues with distinct titles may be claimed and worked
+concurrently; distinct prefixes stay sequential (single-flight per prefix).
+The filename is the unique issue identity, so a numeric id is only usable when
+the prefix has one member in the expected state; otherwise callers pass the
+exact filename.
 
 ### 4.7.1 Changes
 
 | File | Change |
 |---|---|
-| `.opencode/agents/orchestrator.md` | **NEW** primary agent: `edit: deny`, `todowrite: allow`, `task` allowlist only `lead`, bash queue/git safety gates; owns queue state and dispatch, never implements/plans |
-| `.opencode/agents/lead.md` | `mode: all`, `todowrite: allow`; prompt covers direct start vs. dispatched-for-one-issue, issue scope rules, `Outcome:` + issue id in reports |
+| `.opencode/agents/orchestrator.md` | **NEW** primary agent: `edit: deny`, `todowrite: allow`, `task` allowlist only `lead`, bash queue/git safety gates; uses `next-group`, claims every group member before dispatch, launches one `lead` per issue in parallel worktrees, never implements/plans |
+| `.opencode/agents/lead.md` | `mode: all`, `todowrite: allow`; prompt covers direct start vs. dispatched-for-one-issue, worktree create/work/apply/delete for dispatched issues, issue scope rules, `Outcome:` + issue id in reports |
 | `opencode.json` | `default_agent: orchestrator`; `subagent_depth: 2` (opencode >= 1.18.2) |
-| `.opencode/commands/issues.md` | **NEW** `/issues [status\|next\|all\|accept <id>\|reject <id>]`, one issue by default, all stops each at review |
+| `.opencode/commands/issues.md` | **NEW** `/issues [status\|next\|all\|accept <id>\|reject <id>]`, one prefix group by default, `all` walks groups sequentially and stops each issue at review |
 | `.opencode/commands/status.md` | Adds queue status |
-| `scripts/issue_queue.py` | **NEW** stdlib queue helper: states/transitions, numeric order, duplicate detection, no-clobber moves, `fcntl` lock, `--root`, CLI exit codes 0/1/2 |
+| `scripts/issue_queue.py` | **NEW** stdlib queue helper: prefix groups, single-flight per prefix, exact-filename disambiguation, `next-group`, no-clobber moves, `fcntl` lock, `--root`, CLI exit codes 0/1/2 |
 | `issues/` | `README.md` contract, `.gitignore` (`.lock`), four state dirs with `.gitkeep` |
-| `tests/` | **NEW** structural harness config tests + queue behavior tests (stdlib `unittest`, no PyYAML) |
+| `tests/` | **NEW** structural harness config tests + queue behavior tests (stdlib `unittest`, no PyYAML), including same-prefix group concurrency and `next-group` |
 | Installer + docs | Full-mode install of orchestrator, `/issues`, queue script and issue scaffolding; config merge warns on `subagent_depth < 2`; README/AGENTS/constitution/validation updated |
 
 ### 4.7.2 Contract
 
 - States: `todo` → `inprogress` → `review` → `completed`; `reopen` returns
   `review` → `todo`, `return` returns `inprogress` → `todo`.
-- Single-flight (`start` refuses a second `inprogress`), claim-before-dispatch,
-  one issue/one lead, no-clobber moves, `issues/.lock`.
-- Review is the acceptance gate: only the user runs `/issues accept` or
-  `/issues reject`; agents never self-accept.
-- Failure/interruption leaves the issue in `inprogress` and is reported.
+- Numeric prefix groups in ascending order; at most one prefix may be
+  `inprogress` at a time, but any number of same-prefix issues may run
+  concurrently (single-flight per prefix).
+- Every member of the current group is claimed before any dispatch. A partial
+  claim failure (or unrelated WIP after the claim commit) returns the
+  just-claimed issues to `todo` and commits only those issue-state moves; one
+  issue gets one lead, and each lead works in its own git worktree
+  (`worktree_create` → work/verify/commit → `worktree_apply` merge →
+  `worktree_delete`).
+- The orchestrator commits only the claim batch (issue-state moves) before
+  dispatch so main is clean of issue moves for `worktree_apply`, then checks
+  `git status --porcelain` and does not dispatch if unrelated WIP remains. It
+  collects all group lead reports before moving any state, then commits the
+  success `finish` moves together. A group is **not** finished while any member
+  remains `inprogress`; blocked/failed members keep the prefix active and block
+  later groups until returned/retried.
+- The filename is the unique identity: an identical filename across states is
+  an error; numeric ids resolve within the expected state and are ambiguous
+  when siblings share that state, so callers use the exact filename.
+- No-clobber moves, `issues/.lock`. A single orchestrator invocation owns the
+  queue; concurrent `/issues` runs can split a group (no atomic group claim).
+  Review is the acceptance gate: only the user runs `/issues accept` or
+  `/issues reject` (exact filename when a prefix is shared); agents never
+  self-accept.
+- Failure/interruption leaves the issue in `inprogress`, keeps blocking later
+  groups, and is reported.
+- `/issues` defaults to one group per invocation; `all` processes groups
+  sequentially, stops every issue at `review`, and does not start the next
+  group until blocked/failed members are returned/retried.
 
 ### 4.7.3 Validation
 
-Scenarios 17–20 added to `docs/validation.md` (depth-2 dispatch, numeric order
-+ claim-before-dispatch, failure stays `inprogress`, acceptance gate). They are
-marked `needs user` pending a live session after an opencode restart. Queue
-mechanics are covered deterministically by `python3 -m unittest discover -s
-tests`.
+Scenarios 17–21 added to `docs/validation.md` (depth-2 dispatch, numeric order
++ claim-before-dispatch, failure stays `inprogress`, acceptance gate, parallel
+same-prefix group). They are marked `needs user` pending a live session after
+an opencode restart. Queue mechanics — including prefix groups, exact-filename
+disambiguation, and `next-group` determinism — are covered deterministically
+by `python3 -m unittest discover -s tests`.
 
 ---
 

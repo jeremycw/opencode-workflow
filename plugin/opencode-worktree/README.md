@@ -261,13 +261,18 @@ Runs on plugin load, before each `worktree_create`, and on `session.idle` — an
 ## Suggested workflow (agentic harness)
 
 Pair with a two-level hierarchy: `orchestrator` (primary) owns `issues/` and
-dispatches one `lead` per issue; `lead` (mode `all`) delegates to worktrees in
-parallel; specialists never delegate.
+works numeric prefix groups, dispatching one `lead` per issue with every member
+of the active group running in parallel; `lead` (mode `all`) delegates to
+worktrees in parallel; specialists never delegate.
 
-- `/issues` claims a `todo` issue (`todo` → `inprogress`) **before** spawning
-  `lead`; success lands in `review` for explicit **user** acceptance
+- `/issues` claims every `todo` issue in the current same-prefix group
+  (`todo` → `inprogress`) **before** spawning one `lead` per issue, each in its
+  own worktree; success lands in `review` for explicit **user** acceptance
   (`/issues accept <id>` → `completed`). Failure stays `inprogress`.
-- Independent tasks → `worktree_create` each, then `worktree_apply(branch, mode: "merge")` back before the final report.
+- Direct-mode independent tasks (`/feature`-style) → `worktree_create` each,
+  then `worktree_apply(branch, mode: "merge")` back before the final report. An
+  issue-dispatched `lead` instead works inside its single issue worktree and
+  does not nest more per-task worktrees.
 - Delegation depth is 2 (`subagent_depth: 2`): the orchestrator may task
   `lead`; `lead` may task planners/coders/reviewers; specialists never spawn
   subagents.
