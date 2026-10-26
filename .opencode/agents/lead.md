@@ -36,7 +36,7 @@ the main checkout's queue. In issue-dispatched work mode (everything except
 acceptance conflict resolver mode below) — especially for a member of a
 same-prefix parallel group — work in exactly one worktree on the issue's
 canonical branch. Resolve it read-only with
-`python3 scripts/issue_queue.py branch "<exact issue filename>"` (the
+`python3 .opencode/scripts/issue_queue.py branch "<exact issue filename>"` (the
 orchestrator also passes it). Read the issue from the main checkout path the
 orchestrator passes (the worktree has no queue copy). Never create, edit, move,
 stage, or commit queue files: queue moves are the orchestrator's local-only

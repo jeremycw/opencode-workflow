@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "issue_queue.py"
+SCRIPT = ROOT / ".opencode" / "scripts" / "issue_queue.py"
 GIT = shutil.which("git")
 SQUASH_MESSAGE = "issue 005: Keep issue state off main"
 
@@ -37,8 +37,8 @@ class AcceptanceSquashTests(unittest.TestCase):
         self.git("config", "user.name", "Test User")
         self.git("config", "user.email", "test@example.com")
         self.git("config", "commit.gpgsign", "false")
-        (self.repo / "scripts").mkdir()
-        shutil.copy2(SCRIPT, self.repo / "scripts" / "issue_queue.py")
+        (self.repo / ".opencode" / "scripts").mkdir(parents=True)
+        shutil.copy2(SCRIPT, self.repo / ".opencode" / "scripts" / "issue_queue.py")
 
     # Helpers -------------------------------------------------------------
 
@@ -86,7 +86,7 @@ class AcceptanceSquashTests(unittest.TestCase):
         return subprocess.run(
             [
                 sys.executable,
-                str(self.repo / "scripts" / "issue_queue.py"),
+                str(self.repo / ".opencode" / "scripts" / "issue_queue.py"),
                 "--root",
                 str(self.repo / "issues"),
                 *args,

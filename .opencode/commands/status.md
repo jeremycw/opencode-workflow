@@ -5,4 +5,4 @@ agent: lead
 
 Report briefly: current branch, uncommitted changes, recent commits, work in
 progress, worktree state (`worktree_list`), and issue queue status
-(`python3 scripts/issue_queue.py status`). No changes, no commits.
+(`python3 .opencode/scripts/issue_queue.py status`). No changes, no commits.

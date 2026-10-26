@@ -58,13 +58,13 @@ Three layers make this work:
 
 | Layer | Where | Role |
 |---|---|---|
-| **Constitution** | `.opencode/constitution.md` | Behavioral contract — division of responsibility, approval boundary, the engineering loop, issue orchestration. Injected into **every** agent via the `instructions` field in `opencode.json` (no agent has to read it). |
+| **Constitution** | `.opencode/constitution.md` | Behavioral contract — division of responsibility, approval boundary, the engineering loop, issue orchestration. Injected into **every** agent via the `instructions` field in `.opencode/opencode.json` (no agent has to read it). |
 | **Agents** | `.opencode/agents/*.md` | The team: primary `orchestrator` (queue owner), `lead` (mode `all`), and four specialized subagents. |
 | **Commands** | `.opencode/commands/*.md` | User-facing entry points: `/issues`, `/feature`, `/ship`, `/status`. |
 
-`AGENTS.md` at the repo root holds workspace-specific notes only (project
-facts, conventions) — a copied harness leaves it clear for the new project's
-own instructions.
+`AGENTS.md` at the repo root holds this workspace's notes only (project
+facts, conventions); a full install never creates or manages a target
+`AGENTS.md`.
 
 ## The engineering loop
 
@@ -116,7 +116,7 @@ squash commit in a temporary acceptance worktree.
 ## Issue workflow
 
 `issues/` is a **local, git-ignored, untracked** queue owned by the
-`orchestrator` agent and moved only by `scripts/issue_queue.py`. It is shared
+`orchestrator` agent and moved only by `.opencode/scripts/issue_queue.py`. It is shared
 by every worktree, and state moves are plain filesystem moves that create
 **no git commits**. The tracked canonical docs/scaffolding live in
 `plugin/opencode-worktree/templates/issues/`; the full installer copies them
@@ -179,12 +179,12 @@ todo ──start──► inprogress ──finish──► review ──complete
   abandon.
 
 ```bash
-python3 scripts/issue_queue.py status          # queue counts + issue paths
-python3 scripts/issue_queue.py next-group      # every claimable todo in the current group
-python3 scripts/issue_queue.py branch "001 A.md" # canonical branch (any state)
-python3 scripts/issue_queue.py start "001 A.md" # claim before dispatch (exact filename)
-python3 scripts/issue_queue.py finish "001 A.md" # success -> review (local, no commit)
-python3 scripts/issue_queue.py complete "001 A.md" # user acceptance only (local, no commit)
+python3 .opencode/scripts/issue_queue.py status          # queue counts + issue paths
+python3 .opencode/scripts/issue_queue.py next-group      # every claimable todo in the current group
+python3 .opencode/scripts/issue_queue.py branch "001 A.md" # canonical branch (any state)
+python3 .opencode/scripts/issue_queue.py start "001 A.md" # claim before dispatch (exact filename)
+python3 .opencode/scripts/issue_queue.py finish "001 A.md" # success -> review (local, no commit)
+python3 .opencode/scripts/issue_queue.py complete "001 A.md" # user acceptance only (local, no commit)
 ```
 
 The script defaults to the main checkout's queue even when run from a linked
@@ -213,7 +213,7 @@ Built-in opencode agents (`explore`, `build`, `general`, `scout`, …) remain
 available; `lead` may delegate to `explore` for fast codebase lookups, and
 `build` stays as the escape hatch.
 
-### Global permission safety net (`opencode.json`)
+### Global permission safety net (`.opencode/opencode.json`)
 
 Applies to every agent as a last-match-wins layer: `bash` `*` → allow, with
 **ask** on `git push*` (all pushes — a bare `git push` cannot bypass the
@@ -253,8 +253,8 @@ bash/`worktree_apply`, not a new terminal window.
 
 > **Note:** the plugin is now installed at the project-scoped path
 > `.opencode/plugin/` and auto-discovered by opencode (its loader globs
-> top-level `{plugin,plugins}/*.{ts,js}` under the config dir — no
-> `opencode.json` entry is needed). `.opencode/plugin/` is a byte-identical copy
+> top-level `{plugin,plugins}/*.{ts,js}` under the config dir — no plugin entry
+> in `.opencode/opencode.json` is needed). `.opencode/plugin/` is a byte-identical copy
 > of the vendored source of record at `plugin/opencode-worktree/`; keep the two
 > in sync. Its runtime deps are declared in `.opencode/package.json` and
 > resolved from `.opencode/node_modules`, so **restart opencode** after any
@@ -267,31 +267,30 @@ bash/`worktree_apply`, not a new terminal window.
 ├── PLAN.md                    # Implementation plan + phase status
 ├── README.md                  # This file
 ├── AGENTS.md                  # Workspace notes (project facts, conventions)
-├── opencode.json              # Config: constitution injection, orchestrator default, depth 2, permissions
 ├── RESEARCH-grok-build.md     # Research: grok-build harness (parallel tasks, worktrees)
 ├── issues/                    # LOCAL queue (git-ignored/untracked, shared by worktrees)
 │   └── README.md              # Local copy of the queue contract
-├── scripts/
-│   └── issue_queue.py         # Deterministic, locked, no-clobber local queue moves
 ├── tests/                     # Harness config + issue-queue + acceptance tests (stdlib unittest)
 ├── plugin/
 │   └── opencode-worktree/
 │       ├── install.sh          # Full-harness or plugin-only installer
 │       └── templates/
-│           ├── AGENTS.md       # Neutral workspace notes for new projects
 │           └── issues/         # Canonical queue scaffolding copied by full installs
 │               └── README.md   # Canonical queue contract
 ├── .opencode/
+│   ├── opencode.json          # Config: constitution injection, orchestrator default, depth 2, permissions
 │   ├── constitution.md        # Harness constitution (injected into every agent)
 │   ├── agents/                # orchestrator, lead, planner, coder, reviewer, researcher
 │   ├── commands/              # issues, feature, ship, status
+│   ├── scripts/
+│   │   └── issue_queue.py     # Deterministic, locked, no-clobber local queue moves
 │   ├── plugin/                # Installed worktree plugin (auto-loaded; copy of plugin/opencode-worktree/)
 │   └── worktree.jsonc         # Worktree plugin config
 ├── sandbox/                   # Training project (Python + unittest) used to validate the harness
 │   ├── AGENTS.md              # Sandbox-specific conventions (nested AGENTS.md test)
 │   └── README.md              # Sandbox "product intent"
 ├── docs/
-│   └── validation.md          # Scenario checklist + sign-off (scenarios 1–26)
+│   └── validation.md          # Scenario checklist + sign-off (harness development only; not installed)
 └── .gitignore                 # Contains the root-anchored /issues/ entry
 ```
 
@@ -314,14 +313,17 @@ bash/`worktree_apply`, not a new terminal window.
    ./plugin/opencode-worktree/install.sh /path/to/project
    ```
 
-   This one command copies the constitution, agent team, commands, docs, and
-   worktree plugin, and merges `opencode.json` without overriding existing
-   keys (`default_agent` is never hijacked; `instructions` are unioned;
-   permissions are filled only where missing, and harness bash rules are only
-   added to an existing explicit `"*": "allow"` policy). Full mode also copies
-   the queue scaffolding from `plugin/opencode-worktree/templates/issues/` and
-   ensures the target's root `.gitignore` gains the root-anchored entry
-   `/issues/` (backup/append, never clobbering the file). The entry is
+   This one command writes only runtime harness files under `.opencode/`
+   (config, constitution, agents, commands, plugin, queue script), the local
+   `issues/` scaffolding from `plugin/opencode-worktree/templates/issues/`,
+   and the root-anchored `/issues/` entry in the target `.gitignore`
+   (backup/append, never clobbering the file). It merges
+   `.opencode/opencode.json` without overriding existing keys
+   (`default_agent` is never hijacked; `instructions` are unioned; permissions
+   are filled only where missing, and harness bash rules are only added to an
+   existing explicit `"*": "allow"` policy). It never installs harness docs, a
+   target `AGENTS.md`, a root `scripts/` directory, or a root `opencode.json`,
+   and only warns about a root config or legacy files. The entry is
    root-anchored so the harness checkout's
    `plugin/opencode-worktree/templates/issues/` stays tracked; an installed
    project simply has its local `issues/` plus this ignore. The local queue is
@@ -332,7 +334,7 @@ bash/`worktree_apply`, not a new terminal window.
    `--plugin-only` to install just the worktree plugin, `--with-sandbox` to
    include the demo project, or `--force` to back up and replace
    template-owned files. **Restart opencode** afterward — config is loaded once
-   at startup, so restart after any change to `opencode.json`, agents,
+   at startup, so restart after any change to `.opencode/opencode.json`, agents,
    commands, skills, or plugins.
 3. Run the harness and sandbox tests to confirm the environment:
 

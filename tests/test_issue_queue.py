@@ -1,4 +1,4 @@
-"""Behavioral tests for scripts/issue_queue.py (stdlib unittest, temp dirs)."""
+"""Behavioral tests for .opencode/scripts/issue_queue.py (stdlib unittest, temp dirs)."""
 
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "issue_queue.py"
+SCRIPT = ROOT / ".opencode" / "scripts" / "issue_queue.py"
 
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / ".opencode" / "scripts"))
 import issue_queue as queue  # noqa: E402  (path set up immediately above)
 
 try:
@@ -762,7 +762,7 @@ class DefaultRootTests(unittest.TestCase):
         return path
 
     def install_script(
-        self, root: Path, relative: str = "scripts/issue_queue.py"
+        self, root: Path, relative: str = ".opencode/scripts/issue_queue.py"
     ) -> Path:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -778,7 +778,7 @@ class DefaultRootTests(unittest.TestCase):
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(script), *args],
-            cwd=str(cwd or script.parent.parent),
+            cwd=str(cwd or script.parents[2]),
             capture_output=True,
             text=True,
             timeout=30,
@@ -794,7 +794,7 @@ class DefaultRootTests(unittest.TestCase):
 
         worktree = self.base / "worktree"
         self.git(repo, "worktree", "add", "-b", "issue/005-demo", str(worktree), "main")
-        return repo, worktree, worktree / "scripts" / "issue_queue.py"
+        return repo, worktree, worktree / ".opencode" / "scripts" / "issue_queue.py"
 
     def test_linked_worktree_uses_the_main_checkout_queue(self):
         repo, worktree, script = self.linked_worktree()
@@ -821,7 +821,7 @@ class DefaultRootTests(unittest.TestCase):
 
         worktree = self.base / "worktree"
         self.git(repo, "worktree", "add", "-b", "issue/005-demo", str(worktree), "main")
-        script = worktree / "scripts" / "issue_queue.py"
+        script = worktree / ".opencode" / "scripts" / "issue_queue.py"
         self.assertTrue(script.is_file())
 
         # The worktree must not grow its own queue when git cannot run.
@@ -869,7 +869,7 @@ class DefaultRootTests(unittest.TestCase):
 
     def test_monorepo_subdirectory_resolves_its_own_queue(self):
         repo = self.init_repo(self.base / "repo")
-        script = self.install_script(repo, "sub/scripts/issue_queue.py")
+        script = self.install_script(repo, "sub/.opencode/scripts/issue_queue.py")
         sub_todo = repo / "sub" / "issues" / "todo"
         sub_todo.mkdir(parents=True)
         (sub_todo / "001 Sub.md").write_text("# sub\n", encoding="utf-8")
@@ -887,7 +887,7 @@ class DefaultRootTests(unittest.TestCase):
         self.assertTrue((repo / "sub" / "issues" / "inprogress" / "001 Sub.md").is_file())
         self.assertTrue((root_todo / "999 Root.md").is_file())
 
-    def test_non_git_directory_falls_back_beside_the_script(self):
+    def test_non_git_directory_falls_back_to_project_root(self):
         base = self.base / "nogit"
         script = self.install_script(base)
         todo = base / "issues" / "todo"
@@ -898,7 +898,7 @@ class DefaultRootTests(unittest.TestCase):
         self.assertEqual(listed.returncode, 0, listed.stderr)
         self.assertEqual(listed.stdout.strip(), "issues/todo/001 Local.md")
 
-    def test_unavailable_git_falls_back_beside_the_script(self):
+    def test_unavailable_git_falls_back_to_project_root(self):
         base = self.base / "nogit"
         script = self.install_script(base)
         todo = base / "issues" / "todo"

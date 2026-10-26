@@ -35,10 +35,19 @@ def command(name: str) -> tuple[dict, str]:
 
 class ConfigTests(unittest.TestCase):
     def test_default_agent_and_subagent_depth(self):
-        config = json.loads((ROOT / "opencode.json").read_text(encoding="utf-8"))
+        config = json.loads((ROOT / ".opencode" / "opencode.json").read_text(encoding="utf-8"))
         self.assertEqual(config["default_agent"], "orchestrator")
         self.assertEqual(config["subagent_depth"], 2)
-        self.assertIn(".opencode/constitution.md", config["instructions"])
+        self.assertEqual(config["instructions"], [".opencode/constitution.md"])
+
+    def test_harness_files_live_under_opencode(self):
+        self.assertTrue((ROOT / ".opencode" / "opencode.json").is_file())
+        self.assertTrue((ROOT / ".opencode" / "scripts" / "issue_queue.py").is_file())
+        self.assertFalse((ROOT / "opencode.json").exists())
+        self.assertFalse((ROOT / "scripts" / "issue_queue.py").exists())
+        self.assertFalse(
+            (ROOT / "plugin" / "opencode-worktree" / "templates" / "AGENTS.md").exists()
+        )
 
     def test_orchestrator_is_primary_editless_and_dispatches_only_lead(self):
         front = agent("orchestrator")
@@ -122,7 +131,8 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn('grep -qxF -- "issues/" "$file"', installer)
         self.assertIn('grep -qxF -- "$line" "$file"', installer)
         for token in (
-            "scripts/issue_queue.py",
+            ".opencode/scripts/issue_queue.py",
+            ".opencode/opencode.json",
             "templates/issues",
             "/issues/",
             "ensure_root_gitignore",
@@ -132,6 +142,14 @@ class ConfigTests(unittest.TestCase):
             ".gitkeep",
         ):
             self.assertIn(token, installer)
+        for old in (
+            'TEMPLATE_AGENTS="$SCRIPT_DIR/templates/AGENTS.md"',
+            'install_if_absent "$TEMPLATE_AGENTS" "AGENTS.md"',
+            'install_managed_file "$HARNESS_ROOT/docs/validation.md" "docs/validation.md"',
+            'install_managed_file "$ISSUE_QUEUE_SRC" "scripts/issue_queue.py"',
+            'add_missing_file "$HARNESS_ROOT/docs/validation.md"',
+        ):
+            self.assertNotIn(old, installer)
 
     def test_issue_scaffolding_exists(self):
         issues = TEMPLATE_ISSUES

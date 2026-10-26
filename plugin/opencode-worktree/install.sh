@@ -19,7 +19,6 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd -P)"
 SRC_DIR="$SCRIPT_DIR/src/plugin"
 MANIFEST="$SCRIPT_DIR/package.json"
-TEMPLATE_AGENTS="$SCRIPT_DIR/templates/AGENTS.md"
 HARNESS_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 
 SANDBOX_SRC="$HARNESS_ROOT/sandbox"
@@ -37,7 +36,7 @@ SANDBOX_FILES=(
 AGENT_FILES=(orchestrator lead planner coder reviewer researcher)
 COMMAND_FILES=(issues feature ship status)
 ISSUE_STATES=(todo inprogress review completed)
-ISSUE_QUEUE_SRC="$HARNESS_ROOT/scripts/issue_queue.py"
+ISSUE_QUEUE_SRC="$HARNESS_ROOT/.opencode/scripts/issue_queue.py"
 ISSUES_SRC="$SCRIPT_DIR/templates/issues"
 
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -49,16 +48,19 @@ usage() {
   printf '\n'
   printf 'Install the opencode engineering harness and/or the opencode-worktree\n'
   printf 'plugin into TARGET_PROJECT_DIR. TARGET_PROJECT_DIR defaults to the\n'
-  printf 'current working directory. The full harness includes the issue\n'
-  printf 'orchestrator, /issues command, issue queue helper, and issue scaffolding.\n'
+  printf 'current working directory. A full harness install writes only the\n'
+  printf 'runtime files under .opencode/ plus the local issues/ queue scaffolding\n'
+  printf 'and a root-anchored /issues/ .gitignore entry; it leaves the target\n'
+  printf 'workspace notes, docs, root scripts, and root config untouched.\n'
   printf '\n'
   printf 'Modes:\n'
   printf '  (default)        Full harness when run from a harness checkout, else plugin only\n'
-  printf '  --plugin-only    Install only the worktree plugin (current behavior)\n'
+  printf '  --plugin-only    Install only the worktree plugin\n'
   printf '\n'
   printf 'Options:\n'
   printf '  --with-sandbox   Also install the sandbox demo project (implies full harness)\n'
-  printf '  --force          Back up and replace existing AGENTS.md / worktree.jsonc / sandbox/\n'
+  printf '  --force          Back up and replace existing .opencode/worktree.jsonc,\n'
+  printf '                   issue scaffolding, or sandbox/ (not AGENTS.md)\n'
   printf '  -h, --help       Show this help\n'
   printf '  --               End of options\n'
 }
@@ -138,18 +140,13 @@ if [ -e "$TARGET_OC" ] && [ ! -d "$TARGET_OC" ]; then
   exit 1
 fi
 
-if [ -e "$TARGET_ABS/opencode.json" ] && [ ! -f "$TARGET_ABS/opencode.json" ]; then
-  err "target opencode.json exists but is not a regular file: $TARGET_ABS/opencode.json"
-  exit 1
-fi
-
 if [ -e "$TARGET_OC/package.json" ] && [ ! -f "$TARGET_OC/package.json" ]; then
   err "target .opencode/package.json exists but is not a regular file: $TARGET_OC/package.json"
   exit 1
 fi
 
 HARNESS_DETECTED=0
-if [ -f "$HARNESS_ROOT/opencode.json" ] &&
+if [ -f "$HARNESS_ROOT/.opencode/opencode.json" ] &&
   [ -f "$HARNESS_ROOT/.opencode/constitution.md" ] &&
   [ -f "$HARNESS_ROOT/.opencode/agents/lead.md" ]; then
   HARNESS_DETECTED=1
@@ -159,7 +156,7 @@ if [ "$PLUGIN_ONLY" -eq 1 ]; then
   MODE="plugin"
 elif [ "$WITH_SANDBOX" -eq 1 ]; then
   if [ "$HARNESS_DETECTED" -ne 1 ]; then
-    err "--with-sandbox requires a harness checkout (expected opencode.json, .opencode/constitution.md and .opencode/agents/lead.md under $HARNESS_ROOT)"
+    err "--with-sandbox requires a harness checkout (expected .opencode/opencode.json, .opencode/constitution.md and .opencode/agents/lead.md under $HARNESS_ROOT)"
     exit 1
   fi
   MODE="full"
@@ -178,11 +175,37 @@ if [ "$MODE" = "full" ] && [ "$TARGET_ABS" = "$HARNESS_ROOT" ]; then
   exit 1
 fi
 
-if [ "$MODE" = "full" ] && [ -e "$TARGET_ABS/opencode.jsonc" ]; then
-  err "target has opencode.jsonc: $TARGET_ABS/opencode.jsonc"
-  err "cannot safely merge JSONC with the harness opencode.json"
+if [ "$MODE" = "full" ] && [ -e "$TARGET_OC/opencode.jsonc" ]; then
+  err "target has .opencode/opencode.jsonc: $TARGET_OC/opencode.jsonc"
+  err "cannot safely merge JSONC with the harness .opencode/opencode.json"
   err "merge the config manually, or re-run with --plugin-only"
   exit 1
+fi
+
+if [ "$MODE" = "full" ]; then
+  if [ -e "$TARGET_ABS/opencode.json" ]; then
+    warn "target has a root opencode.json: $TARGET_ABS/opencode.json"
+    warn "opencode loads .opencode/opencode.json after the root config, so the harness config wins on conflicting keys; the root file is left untouched"
+  fi
+  if [ -e "$TARGET_ABS/opencode.jsonc" ]; then
+    warn "target has a root opencode.jsonc: $TARGET_ABS/opencode.jsonc"
+    warn "opencode loads .opencode/opencode.json after the root config, so the harness config wins on conflicting keys; the root file is left untouched"
+  fi
+
+  # Legacy installs are warned about, never deleted or rewritten.
+  if [ -e "$TARGET_ABS/scripts/issue_queue.py" ]; then
+    warn "target still has the legacy root scripts/issue_queue.py: $TARGET_ABS/scripts/issue_queue.py"
+    warn "use .opencode/scripts/issue_queue.py instead; the legacy file was left untouched"
+  fi
+  if [ -e "$TARGET_ABS/docs/validation.md" ]; then
+    warn "target still has the legacy harness docs/validation.md: $TARGET_ABS/docs/validation.md"
+    warn "the harness no longer installs docs; the legacy file was left untouched"
+  fi
+  if [ -f "$TARGET_ABS/AGENTS.md" ] &&
+    grep -qF -- '> Project-specific facts and conventions for agents working in this repository.' "$TARGET_ABS/AGENTS.md"; then
+    warn "target AGENTS.md looks harness-installed (it still has the old template marker): $TARGET_ABS/AGENTS.md"
+    warn "the harness no longer installs or manages AGENTS.md; the file was left untouched"
+  fi
 fi
 
 # Validate every destination type before any target write so a bad path cannot
@@ -211,16 +234,15 @@ require_file_or_absent "$TARGET_OC/.gitignore" ".opencode/.gitignore"
 require_dir_or_absent "$TARGET_OC/.install-backups" ".opencode/.install-backups"
 
 if [ "$MODE" = "full" ]; then
-  require_dir_or_absent "$TARGET_ABS/docs" "docs"
-  require_dir_or_absent "$TARGET_ABS/scripts" "scripts"
   require_dir_or_absent "$TARGET_ABS/issues" "issues"
   require_dir_or_absent "$TARGET_OC/agents" ".opencode/agents"
   require_dir_or_absent "$TARGET_OC/commands" ".opencode/commands"
-  require_file_or_absent "$TARGET_ABS/AGENTS.md" "AGENTS.md"
+  require_dir_or_absent "$TARGET_OC/scripts" ".opencode/scripts"
   require_file_or_absent "$TARGET_ABS/.gitignore" ".gitignore"
+  require_file_or_absent "$TARGET_OC/opencode.json" ".opencode/opencode.json"
   require_file_or_absent "$TARGET_OC/worktree.jsonc" ".opencode/worktree.jsonc"
   require_file_or_absent "$TARGET_OC/constitution.md" ".opencode/constitution.md"
-  require_file_or_absent "$TARGET_ABS/scripts/issue_queue.py" "scripts/issue_queue.py"
+  require_file_or_absent "$TARGET_OC/scripts/issue_queue.py" ".opencode/scripts/issue_queue.py"
   require_file_or_absent "$TARGET_ABS/issues/README.md" "issues/README.md"
   require_file_or_absent "$TARGET_ABS/issues/.gitignore" "issues/.gitignore"
   for state in "${ISSUE_STATES[@]}"; do
@@ -233,7 +255,6 @@ if [ "$MODE" = "full" ]; then
   for command in "${COMMAND_FILES[@]}"; do
     require_file_or_absent "$TARGET_OC/commands/$command.md" ".opencode/commands/$command.md"
   done
-  require_file_or_absent "$TARGET_ABS/docs/validation.md" "docs/validation.md"
 fi
 
 if [ "$MODE" = "full" ] && [ "$WITH_SANDBOX" -eq 1 ]; then
@@ -258,11 +279,9 @@ add_missing_file "$SRC_DIR/worktree.ts"
 add_missing_file "$MANIFEST"
 
 if [ "$MODE" = "full" ]; then
-  add_missing_file "$HARNESS_ROOT/opencode.json"
-  add_missing_file "$TEMPLATE_AGENTS"
+  add_missing_file "$HARNESS_ROOT/.opencode/opencode.json"
   add_missing_file "$HARNESS_ROOT/.opencode/constitution.md"
   add_missing_file "$HARNESS_ROOT/.opencode/worktree.jsonc"
-  add_missing_file "$HARNESS_ROOT/docs/validation.md"
   add_missing_file "$ISSUE_QUEUE_SRC"
   add_missing_file "$ISSUES_SRC/README.md"
   add_missing_file "$ISSUES_SRC/.gitignore"
@@ -555,13 +574,13 @@ function check(filePath, rel, allowEmpty) {
   }
 }
 
-check(configPath, "opencode.json", false);
+check(configPath, ".opencode/opencode.json", false);
 check(packagePath, ".opencode/package.json", true);
 NODE
 
 PREFLIGHT_CONFIG=""
 if [ "$MODE" = "full" ]; then
-  PREFLIGHT_CONFIG="$TARGET_ABS/opencode.json"
+  PREFLIGHT_CONFIG="$TARGET_OC/opencode.json"
 fi
 "$MERGE_RUNNER" "$PREFLIGHT_SCRIPT" \
   "$PREFLIGHT_CONFIG" \
@@ -583,7 +602,7 @@ const targetPath = process.argv[2];
 const harnessPath = process.argv[3];
 const backupRoot = process.argv[4];
 const decisionsPath = process.argv[5];
-const relTarget = "opencode.json";
+const relTarget = ".opencode/opencode.json";
 const CONSTITUTION = ".opencode/constitution.md";
 
 const decisions = [];
@@ -660,6 +679,7 @@ if (!isPlainObject(harness)) {
 }
 
 if (!fs.existsSync(targetPath)) {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   fs.writeFileSync(targetPath, JSON.stringify(harness, null, 2) + "\n");
   note("default_agent: set to " + JSON.stringify(harness.default_agent || "orchestrator"));
   note(
@@ -858,19 +878,15 @@ finish();
 NODE
 
   "$MERGE_RUNNER" "$CONFIG_SCRIPT" \
-    "$TARGET_ABS/opencode.json" \
-    "$HARNESS_ROOT/opencode.json" \
+    "$TARGET_OC/opencode.json" \
+    "$HARNESS_ROOT/.opencode/opencode.json" \
     "$BACKUP_ROOT" \
     "$CONFIG_DECISIONS"
 fi
 
-AGENTS_STATUS="not installed"
 WORKTREE_STATUS="not installed"
 
 if [ "$MODE" = "full" ]; then
-  install_if_absent "$TEMPLATE_AGENTS" "AGENTS.md"
-  AGENTS_STATUS="$INSTALL_IF_ABSENT_STATUS"
-
   install_managed_file "$HARNESS_ROOT/.opencode/constitution.md" ".opencode/constitution.md"
   for agent in "${AGENT_FILES[@]}"; do
     install_managed_file "$HARNESS_ROOT/.opencode/agents/$agent.md" ".opencode/agents/$agent.md"
@@ -882,9 +898,7 @@ if [ "$MODE" = "full" ]; then
   install_if_absent "$HARNESS_ROOT/.opencode/worktree.jsonc" ".opencode/worktree.jsonc"
   WORKTREE_STATUS="$INSTALL_IF_ABSENT_STATUS"
 
-  install_managed_file "$HARNESS_ROOT/docs/validation.md" "docs/validation.md"
-
-  install_managed_file "$ISSUE_QUEUE_SRC" "scripts/issue_queue.py"
+  install_managed_file "$ISSUE_QUEUE_SRC" ".opencode/scripts/issue_queue.py"
 
   install_issue_file "$ISSUES_SRC/README.md" "issues/README.md"
   install_issue_file "$ISSUES_SRC/.gitignore" "issues/.gitignore"
@@ -1113,11 +1127,9 @@ if [ "$MODE" = "full" ]; then
   printf '  constitution: .opencode/constitution.md\n'
   printf '  agents:       .opencode/agents (%s)\n' "$(IFS=', '; printf '%s' "${AGENT_FILES[*]}")"
   printf '  commands:     .opencode/commands (%s)\n' "$(IFS=', '; printf '%s' "${COMMAND_FILES[*]}")"
-  printf '  config:       opencode.json (existing keys win)\n'
-  printf '  workspace:    AGENTS.md (%s)\n' "$AGENTS_STATUS"
+  printf '  config:       .opencode/opencode.json (existing keys win)\n'
   printf '  worktree cfg: .opencode/worktree.jsonc (%s)\n' "$WORKTREE_STATUS"
-  printf '  docs:         docs/validation.md\n'
-  printf '  queue:        scripts/issue_queue.py (main checkout issues/, shared by worktrees)\n'
+  printf '  queue:        .opencode/scripts/issue_queue.py (main checkout issues/, shared by worktrees)\n'
   printf '  issues:       issues/ (%s; local, git-ignored via root-anchored /issues/)\n' "$ISSUES_STATUS"
   printf '  sandbox:      %s\n' "$SANDBOX_STATUS"
 fi

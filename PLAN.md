@@ -79,9 +79,10 @@ agent when to use it.
    > the move into the repo is Phase 5 work (§5.3).
 8. **Constitution injection** (2026-08-15): the Harness Constitution moved from
    `AGENTS.md` to `.opencode/constitution.md`, injected into every agent via the
-   `instructions` field in `opencode.json`. `AGENTS.md` is workspace-specific
-   notes only — a copied harness leaves AGENTS.md clear for the new project's
-   own instructions. Skills were rejected as the carrier: they load on demand,
+   `instructions` field in `.opencode/opencode.json`. `AGENTS.md` is
+   workspace-specific notes only — a harness install does not create or manage a
+   target `AGENTS.md`, so the target's own workspace notes are left untouched.
+   Skills were rejected as the carrier: they load on demand,
    while the constitution must be unconditionally present in every agent's
    context.
 9. **Delegation-first policy** (2026-08-15, Phase 4.6): the lead is an
@@ -95,13 +96,13 @@ agent when to use it.
     hierarchy is `orchestrator` → `lead` → specialists. `subagent_depth: 2`
     (opencode >= 1.18.2) enables the second level; `lead` becomes `mode: all`
     with `todowrite: allow` so it works both as a direct command target and as
-    a task target. State moves go through `scripts/issue_queue.py`
+    a task target. State moves go through `.opencode/scripts/issue_queue.py`
     (numeric prefix groups, single-flight per prefix, claim-before-dispatch,
     no-clobber, locked). Same-prefix issues run concurrently, each in its own
     worktree; `review` is the user acceptance gate; agents never self-accept.
     **Decision 10 update (2026-10-23, issue 003):** every issue has one
     canonical branch `issue/<id>-<slug>`, resolved read-only by
-    `scripts/issue_queue.py branch` (slug: lowercase title, non-`[a-z0-9]`
+    `.opencode/scripts/issue_queue.py branch` (slug: lowercase title, non-`[a-z0-9]`
     runs -> `-`, trim, cap 60, fallback `issue`; duplicate branch = error).
     Issue-dispatched leads work and commit only inside that branch's worktree
     and never merge; `finish` verifies the branch exists and has at least one
@@ -165,10 +166,10 @@ agent when to use it.
                     USER REVIEW ("Good. Next…")
 ```
 
-- **Permissions** (`opencode.json`) = safety net / approval gates.
+- **Permissions** (`.opencode/opencode.json`) = safety net / approval gates.
 - **`.opencode/constitution.md`** = harness constitution (division of
   responsibility, approval boundary, loop contract), injected into every agent
-  via the `instructions` field in `opencode.json`.
+  via the `instructions` field in `.opencode/opencode.json`.
 - **AGENTS.md** = workspace-specific notes only (project facts, conventions).
 - **Commands** (`/feature`, `/ship`) = feature-level entry points.
 - **Worktree plugin** = parallel-isolation primitive, invoked by `lead` when
@@ -183,7 +184,7 @@ agents inherit the session/global model.
 |---|---|---|---|
 | Architecture / planning | `planner` | Strongest reasoning | e.g. `anthropic/claude-opus-4-5` |
 | Implementation | `coder` | Strong coding | e.g. `anthropic/claude-sonnet-4-5` |
-| Queue orchestration | `orchestrator` | Global default | set `"model"` in `opencode.json` |
+| Queue orchestration | `orchestrator` | Global default | set `"model"` in `.opencode/opencode.json` |
 | Engineering orchestration | `lead` | Strong coordination | e.g. the session default |
 | Review (independent) | `reviewer` | Second provider / independent model | e.g. `openai/gpt-5-2` |
 | Research | `researcher` | Fast / cheap | e.g. global `small_model` |
@@ -202,12 +203,12 @@ agent via `variant:` once the chosen models support them.
 |---|---|
 | `PLAN.md` | This document |
 | `.gitignore` | Ignore opencode runtime state |
-| `opencode.json` | Project config: default agent + global permission safety net |
+| `.opencode/opencode.json` | Project config: default agent + global permission safety net |
 | (none) | **`git init`** — this folder is not a git repo yet. Required before any worktree/git validation (Phase 4) |
 
 > **Sequencing fix:** do NOT set `default_agent` in Phase 0. `default_agent`
 > must point to an existing non-hidden primary agent; `lead.md` arrives in
-> Phase 2. Add `"default_agent": "lead"` to `opencode.json` as part of
+> Phase 2. Add `"default_agent": "lead"` to `.opencode/opencode.json` as part of
 > Phase 2 instead.
 
 ### `.gitignore`
@@ -218,7 +219,7 @@ node_modules
 *.log
 ```
 
-### `opencode.json` (Phase 0 version — no `default_agent` yet)
+### `.opencode/opencode.json` (Phase 0 version — no `default_agent` yet)
 
 ```json
 {
@@ -256,7 +257,7 @@ Rules to remember:
 agent is still `build` until Phase 2 adds `lead`); any `git push` prompts;
 non-push git (status/diff/commit/branch/worktree) does not.
 
-> **Status (2026-08-15): DONE.** `opencode.json` + `.gitignore` in place; `git push*`
+> **Status (2026-08-15): DONE.** `.opencode/opencode.json` + `.gitignore` in place; `git push*`
 > prompts verified live (scenario 5); non-push git does not prompt.
 
 ## Phase 0.5 — Git init
@@ -277,7 +278,7 @@ context in this project).
 
 > **Superseded 2026-08-15 (decision 8):** the constitution below moved to
 > `.opencode/constitution.md`, injected via the `instructions` field in
-> `opencode.json`. `AGENTS.md` now holds workspace-specific notes only. The
+> `.opencode/opencode.json`. `AGENTS.md` now holds workspace-specific notes only. The
 > content below is preserved as the historical Phase 1 record.
 
 This is the behavioral contract. Content:
@@ -353,7 +354,7 @@ custom system prompt with its own role, tool permissions, and model slot.
 
 ### 2.1 `lead.md` — orchestrator (primary)
 
-> **Also in Phase 2:** add `"default_agent": "lead"` to `opencode.json` now
+> **Also in Phase 2:** add `"default_agent": "lead"` to `.opencode/opencode.json` now
 > that `lead` exists (do not set it in Phase 0 — opencode fails to start if
 > `default_agent` names a missing agent).
 
@@ -986,11 +987,12 @@ root-anchored `/issues/` entry specifically so
 `plugin/opencode-worktree/templates/issues/` stays tracked, and the canonical
 docs/scaffolding live there for the full installer. All state
 moves (`start`/`finish`/`complete`/`reopen`/`return`) are pure local filesystem
-moves through `scripts/issue_queue.py`; they create **no git commits** and are
+moves through `.opencode/scripts/issue_queue.py`; they create **no git commits** and are
 never staged or committed. The script defaults to the main checkout's queue
 even from a linked worktree (git common dir resolution); outside git (no `.git`
-marker) it falls back beside the script, while a git failure or timeout inside a
-git worktree is an error with the `--root` override, never a silent
+marker) it falls back to `<project>/issues` at the project root next to
+`.opencode/`, while a git failure or timeout inside a git worktree is an error
+with the `--root` override, never a silent
 worktree-local split. `--root` overrides the root. Claim and finish remain
 local; the pre-dispatch unrelated-WIP check remains but is no longer about
 committing queue moves.
@@ -1067,13 +1069,25 @@ behavior.
 |---|---|
 | `.opencode/agents/orchestrator.md` | **NEW** primary agent: `edit: deny`, `todowrite: allow`, `task` allowlist only `lead`, bash queue/git safety gates; resolves canonical branches before claiming, claims every group member locally before dispatch, launches one `lead` per issue in parallel worktrees, verifies success branches at `finish` (no merge, no queue commit); on acceptance snapshots the queue, stages one squash commit in a temporary `accept/<id>-<slug>` worktree, dispatches one fresh `lead` acceptance conflict resolver **in that worktree** when needed, verifies one commit above `PRE_MERGE` plus both suites, fast-forwards main with `--ff-only`, restores the queue, completes locally, and deletes both worktrees/branches with `deleteBranch: "always"`; failure before the fast-forward keeps the issue in `review` with main untouched; never implements/plans/resolves conflicts itself |
 | `.opencode/agents/lead.md` | `mode: all`, `todowrite: allow`; prompt covers direct start vs. dispatched-for-one-issue vs. orchestrator acceptance conflict resolver; dispatched leads read the issue from the main checkout path passed in, work on the canonical branch, never create/commit queue files, and do not apply/merge/delete the issue worktree (direct-mode worktrees unchanged); resolver works only in the temporary `accept/<id>-<slug>` worktree, preserves both intents, runs both suites + independent `reviewer`, creates the one squash commit, and never touches main or deletes anything; `Outcome:` + issue id + branch/worktree/head SHA in reports |
-| `opencode.json` | `default_agent: orchestrator`; `subagent_depth: 2` (opencode >= 1.18.2) |
+| `.opencode/opencode.json` | `default_agent: orchestrator`; `subagent_depth: 2` (opencode >= 1.18.2) |
 | `.opencode/commands/issues.md` | **NEW** `/issues [status\|next\|all\|accept <id>\|reject <id>]`, one prefix group by default, `all` walks groups sequentially and stops each issue at review; claim/finish are local with no commits; `accept` stages one squash commit in a temporary `accept/<id>-<slug>` worktree, resolves conflicts there, verifies, fast-forwards with `--ff-only`, restores the queue snapshot, completes locally, and deletes both branches/worktrees with `deleteBranch: "always"` |
 | `.opencode/commands/status.md` | Adds queue status |
-| `scripts/issue_queue.py` | **NEW** stdlib queue helper: prefix groups, single-flight per prefix, exact-filename disambiguation, `next-group`, canonical branch resolution (`branch`, `slugify`, `Issue.branch`, collision = error), no-clobber local moves (no commits), `fcntl` lock, main-checkout default root from linked worktrees, `--root`, CLI exit codes 0/1/2 |
+| `.opencode/scripts/issue_queue.py` | **NEW** stdlib queue helper: prefix groups, single-flight per prefix, exact-filename disambiguation, `next-group`, canonical branch resolution (`branch`, `slugify`, `Issue.branch`, collision = error), no-clobber local moves (no commits), `fcntl` lock, main-checkout default root from linked worktrees, `--root`, CLI exit codes 0/1/2 |
 | `issues/` | **LOCAL, git-ignored, untracked** queue shared by all worktrees: `README.md` contract (canonical branches, squash acceptance, migration), `.gitignore` (`.lock`), four state dirs with `.gitkeep`; canonical docs/scaffolding tracked at `plugin/opencode-worktree/templates/issues/` |
 | `tests/` | **NEW** structural harness config tests + queue behavior tests (stdlib `unittest`, no PyYAML), including same-prefix group concurrency, `next-group`, slug/branch resolution and collision behavior, queue default-root resolution from a linked worktree, and the one-commit squash acceptance integration (`tests/test_acceptance_squash.py`) |
-| Installer + docs | Full-mode install of orchestrator, `/issues`, queue script and queue scaffolding from `templates/issues/`; root `.gitignore` gains `/issues/` (backup/append) with a tracked-queue migration warning; config merge warns on `subagent_depth < 2`; README/AGENTS/constitution/validation/PLAN updated for the local queue and squash acceptance |
+| Installer + docs | Full-mode install of orchestrator, `/issues`, `.opencode/opencode.json`, `.opencode/scripts/issue_queue.py`, and queue scaffolding from `templates/issues/`; it writes only runtime harness files under `.opencode/` plus the local `issues/` queue and the root `.gitignore` `/issues/` entry (backup/append) with a tracked-queue migration warning. It never installs harness docs, a target `AGENTS.md`, a root `scripts/` directory, or a root `opencode.json`; legacy target files are warned about, not deleted, and a root config is only warned about. The config merge warns on `subagent_depth < 2`; README/AGENTS/constitution/validation/PLAN updated for the local queue and squash acceptance |
+
+**Issue 006 update (2026-10-26):** the installer was trimmed to runtime
+harness files only. `opencode.json` now lives at `.opencode/opencode.json` and
+the queue helper at `.opencode/scripts/issue_queue.py` (project root stays two
+levels up; linked worktrees still resolve the main checkout's queue). A full
+install no longer copies `docs/validation.md`, a target `AGENTS.md`, a root
+`scripts/` directory, or a root config; `.opencode/opencode.jsonc` is rejected
+as ambiguous, and an existing root `opencode.json`/`opencode.jsonc` is only
+warned about (the `.opencode` config loads later and wins on conflicting keys).
+Legacy `scripts/issue_queue.py`, `docs/validation.md`, and harness-installed
+`AGENTS.md` are warned about but never deleted. `templates/AGENTS.md` was
+deleted; `sandbox/AGENTS.md` remains part of the opt-in sandbox demo.
 
 ### 4.7.2 Contract
 
@@ -1199,7 +1213,7 @@ as a template; nothing is promoted globally.
 - Global promotion would make `lead` a de-facto mandate for every project on this
   machine. A copyable template instead keeps the harness opt-in per workspace,
   lets each project diverge freely, and keeps approval rules local.
-- The harness is already project-scoped (`opencode.json`, `.opencode/agents/`,
+- The harness is already project-scoped (`.opencode/opencode.json`, `.opencode/agents/`,
   `.opencode/commands/`, AGENTS.md). The only non-portable piece is the worktree
   plugin, which currently lives at the global path.
 - Dedicated agents with static per-agent model routing are sufficient — no dynamic
@@ -1223,11 +1237,13 @@ as a template; nothing is promoted globally.
    vendor the upstream original under `vendor/` for attribution; verify no duplicate
    tool registration while the global copy still exists (disable or remove the global
    one when the template is adopted).
-2. **Template manifest:** a documented file list — `AGENTS.md` (workspace notes),
-   `opencode.json` (incl. `instructions` → `.opencode/constitution.md`),
-   `.opencode/` (constitution, agents, commands, plugin, worktree.jsonc,
-   package.json for deps), `docs/validation.md` (scenario checklist). Everything
-   a new workspace needs.
+2. **Template manifest:** a documented file list — `.opencode/opencode.json`
+   (incl. `instructions` → `.opencode/constitution.md`), `.opencode/`
+   (constitution, agents, commands, plugin, worktree.jsonc, package.json for
+   deps, `.opencode/scripts/issue_queue.py`), the local `issues/` queue scaffolding, and
+   the root `.gitignore` `/issues/` entry. A full install does **not** ship
+   harness docs, a target `AGENTS.md`, a root `scripts/` directory, or a root
+   `opencode.json` (issue 006).
 3. **Copy/setup script:** `scripts/init-harness.sh` (or a command) that copies the
    manifest into a target directory and parameterizes the adaptive bits: project
    name, model routing table (currently unset — inherits session/global model),
@@ -1256,7 +1272,7 @@ sign-off complete — all validation scenarios 1–11 pass (`docs/validation.md`
 
 ## Appendix A — Execution order summary
 
-1. **DONE** — Phase 0: scaffold repo (`opencode.json`, `.gitignore`) → restart opencode.
+1. **DONE** — Phase 0: scaffold repo (`.opencode/opencode.json`, `.gitignore`) → restart opencode.
 2. **DONE** — Phase 1: write the harness constitution (now `.opencode/constitution.md`,
    injected via `instructions`; originally `AGENTS.md`) → verify agents cite it
    (scenario 12 recitation pending a restarted session).
@@ -1270,7 +1286,7 @@ sign-off complete — all validation scenarios 1–11 pass (`docs/validation.md`
    scenarios 13–16). Prompt-text portion done 2026-08-15; structural enforcement and
    the remaining commands are pending user go-ahead.
 8. **DONE** — Phase 4.7: issue orchestration at depth 2 (`orchestrator` + `/issues`
-   + `scripts/issue_queue.py` + `issues/` scaffolding; `subagent_depth: 2`,
+   + `.opencode/scripts/issue_queue.py` + `issues/` scaffolding; `subagent_depth: 2`,
    `lead` mode `all`). Implemented 2026-10-22; issue 005 (2026-10-23) moved the
    queue off main (local, git-ignored, untracked, shared by worktrees; no queue
    commits) and replaced merge-on-accept with one-commit squash acceptance in a
@@ -1282,6 +1298,6 @@ sign-off complete — all validation scenarios 1–11 pass (`docs/validation.md`
 
 ## Appendix B — Config change reminder
 
-opencode loads config once at startup. After any change to `opencode.json`,
+opencode loads config once at startup. After any change to `.opencode/opencode.json`,
 agent files, commands, or skills: **quit and restart opencode**. Running
 sessions keep the old config.

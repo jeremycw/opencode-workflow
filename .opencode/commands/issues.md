@@ -8,17 +8,17 @@ $ARGUMENTS
 Interpret the arguments as one of:
 
 - *empty* or `next` — find the current prefix group with
-  `python3 scripts/issue_queue.py next-group`. If it prints `none`, check
-  `python3 scripts/issue_queue.py list inprogress`: a non-empty list means the
+  `python3 .opencode/scripts/issue_queue.py next-group`. If it prints `none`, check
+  `python3 .opencode/scripts/issue_queue.py list inprogress`: a non-empty list means the
   active group is fully claimed — report and wait, and never start a later
   prefix. If the remaining `inprogress` work is blocked/failed, ask the user to
   return/retry it (`return "<exact filename>"`); the active prefix keeps
   blocking later groups until it clears. Otherwise there is no claimable todo
   work (review/completed items may exist). Before claiming, resolve every
   group member's canonical branch read-only with
-  `python3 scripts/issue_queue.py branch "<exact filename>"`; if any lookup
+  `python3 .opencode/scripts/issue_queue.py branch "<exact filename>"`; if any lookup
   fails (unknown, ambiguous, or duplicate branch), dispatch nothing and report.
-  If `python3 scripts/issue_queue.py list review` is non-empty, warn (do NOT
+  If `python3 .opencode/scripts/issue_queue.py list review` is non-empty, warn (do NOT
   block) that those review branches are still unintegrated and are integrated
   only on user acceptance. When there is work, claim **every todo member of the
   group before dispatch**, using quoted exact filenames (`start "001 A.md"`),
@@ -46,7 +46,7 @@ Interpret the arguments as one of:
   edits or moves `issues/`, never creates or commits queue files, and never
   marks an issue complete. Collect **all** group lead reports before changing
   queue state. Then for each success compute its branch with
-  `python3 scripts/issue_queue.py branch "<exact filename>"`, require a
+  `python3 .opencode/scripts/issue_queue.py branch "<exact filename>"`, require a
   non-empty name, verify `git rev-parse --verify --quiet refs/heads/<branch>`,
   and require at least one commit beyond the default branch:
   `git rev-list --count refs/heads/main..refs/heads/<branch>` (`master` where
@@ -54,10 +54,10 @@ Interpret the arguments as one of:
   blocked even when the default branch has advanced since creation.
   Missing/empty branch or a failed check leaves that issue `inprogress` and is
   reported. Do NOT merge and do NOT delete the worktree at finish. Run
-  `python3 scripts/issue_queue.py finish "<exact filename>"` only for verified
+  `python3 .opencode/scripts/issue_queue.py finish "<exact filename>"` only for verified
   successes into `review`, leave `blocked`/`failed` issues in `inprogress`, and
   report the blockers. These are local moves with **no commit**.
-- `status` — run `python3 scripts/issue_queue.py status` and report the queue
+- `status` — run `python3 .opencode/scripts/issue_queue.py status` and report the queue
   (todo / inprogress / review / completed). Do not mutate anything.
 - `all` — process prefix groups sequentially in numeric order using the same
   claim-the-whole-group-before-dispatch loop. Within one group, dispatch one
@@ -71,7 +71,7 @@ Interpret the arguments as one of:
 - `accept <id>` — the user has accepted a `review` issue. This is the only
   integration path, it runs only on explicit user acceptance, and it runs one
   acceptance at a time. Compute its branch with
-  `python3 scripts/issue_queue.py branch "<exact filename>"` (exact filename
+  `python3 .opencode/scripts/issue_queue.py branch "<exact filename>"` (exact filename
   when a prefix is shared; if ambiguous, list the `review` filenames and ask
   the user which one). **Preflight** the main checkout: on the default branch (`main` here;
   `master` where that is the default), **clean outside `issues/` while the
@@ -139,7 +139,7 @@ Interpret the arguments as one of:
     and `issues/.gitignore` from
     `plugin/opencode-worktree/templates/issues/` (the tracked copies were
     removed by the migration). Move the issue to `completed` with
-    `python3 scripts/issue_queue.py complete "<exact filename>"` — a local
+    `python3 .opencode/scripts/issue_queue.py complete "<exact filename>"` — a local
     move with **no commit** — then delete the temporary acceptance
     worktree/branch (`commitPending: false`, `deleteBranch: "always"`) and the
     issue worktree/branch (`deleteBranch: "always"`; after a squash the issue
@@ -172,16 +172,16 @@ Interpret the arguments as one of:
   no worktree was found, probe the branch with `git rev-parse --verify --quiet
   refs/heads/<branch>`: absent -> proceed; present -> orphan branch, report
   blocked and leave state unchanged. Any other cleanup failure -> blocked and
-  state unchanged. Then `python3 scripts/issue_queue.py reopen "<exact
+  state unchanged. Then `python3 .opencode/scripts/issue_queue.py reopen "<exact
   filename>"` (local, **no commit**) and report why. `return` uses the same
-  cleanup-before-move path before `python3 scripts/issue_queue.py return
+  cleanup-before-move path before `python3 .opencode/scripts/issue_queue.py return
   "<exact filename>"`. Use the exact filename when a prefix is shared; if
   ambiguous, list the `review` filenames and ask the user which one to reject.
 
 One prefix group per invocation by default (normally one issue). Never
 implement, plan, review, or edit project files yourself; use only queue moves,
 worktree tools, git checks, and test commands. Use
-`python3 scripts/issue_queue.py` for every state change; do not move issue
+`python3 .opencode/scripts/issue_queue.py` for every state change; do not move issue
 files by hand. Queue moves are local and create **no git commits**: never stage
 or commit `issues/`, and never use a queue-state commit. Never push, and never
 mark an issue complete without explicit user acceptance — agents never

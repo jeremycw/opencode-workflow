@@ -5,7 +5,7 @@ Each issue is one markdown file; its queue state is its directory.
 
 The queue is **local and unversioned**: `issues/` is git-ignored, untracked, and
 shared by every worktree of the repository. State moves are plain filesystem
-moves performed by `scripts/issue_queue.py`; they create no git commits and
+moves performed by `.opencode/scripts/issue_queue.py`; they create no git commits and
 never need one. The root `.gitignore` entry is the **root-anchored** `/issues/`
 specifically so that `plugin/opencode-worktree/templates/issues/` stays tracked:
 only the top-level queue is ignored, never a similarly named directory deeper
@@ -82,9 +82,10 @@ numeric prefix is already `inprogress` (single-flight per prefix), and
    git commits, require no commit, and must never be staged or committed. The
    queue script defaults to the **main checkout's** `issues/` even when run
    from a linked worktree (via the git common dir). Outside git (no `.git`
-   marker) it falls back beside the script; inside a git worktree a git
-   failure or timeout is an **error** with a clear message and the `--root`
-   override, never a silent worktree-local split. `--root` overrides the root.
+   marker) it falls back to `<project>/issues` at the project root next to
+   `.opencode/`; inside a git worktree a git failure or timeout is an **error**
+   with a clear message and the `--root` override, never a silent
+   worktree-local split. `--root` overrides the root.
    Worktrees do not get a local queue copy; the orchestrator passes the main
    checkout's issue path to a dispatched lead or resolver.
 6. **Review is the acceptance gate** — success lands in `review`; only the
@@ -122,7 +123,7 @@ leading/trailing dashes trimmed, capped at 60 characters (trimmed again), and
 `issue/003-use-branches`.
 
 - Resolve a branch read-only across **all** states with
-  `python3 scripts/issue_queue.py branch "<exact filename>"` (a numeric id
+  `python3 .opencode/scripts/issue_queue.py branch "<exact filename>"` (a numeric id
   works only when that prefix has one member). Two issues mapping to the same
   branch is an error naming both filenames and the branch.
 - An issue-dispatched `lead` works only inside
@@ -212,7 +213,7 @@ preserved. One acceptance runs at a time.
    `plugin/opencode-worktree/templates/issues/` (the tracked copies were
    removed by the migration).
 9. Move the issue to `completed` locally with
-   `python3 scripts/issue_queue.py complete "<exact filename>"` — **no commit** —
+   `python3 .opencode/scripts/issue_queue.py complete "<exact filename>"` — **no commit** —
    then delete the temporary acceptance worktree/branch
    (`deleteBranch: "always"`) and the issue worktree/branch
    (`deleteBranch: "always"`; after a squash the issue branch is not an
@@ -257,26 +258,27 @@ state move itself is local and creates no commit.
 
 ## CLI
 
-`scripts/issue_queue.py` (stdlib only) is the only supported way to move
+`.opencode/scripts/issue_queue.py` (stdlib only) is the only supported way to move
 issues. Mutations are pure local filesystem moves — **no git commits**. The
 script defaults to the main checkout's queue even from a linked worktree.
-Outside git (no `.git` marker) it falls back beside the script; inside a git
-worktree a git failure or timeout is an **error** with a clear message and the
-`--root` override, never a silent worktree-local split. `--root <dir>` overrides
+Outside git (no `.git` marker) it falls back to `<project>/issues` at the
+project root next to `.opencode/`; inside a git worktree a git failure or
+timeout is an **error** with a clear message and the `--root` override, never a
+silent worktree-local split. `--root <dir>` overrides
 the queue root (used by tests and for an explicit checkout).
 
 ```bash
-python3 scripts/issue_queue.py status                 # counts + issues per state
-python3 scripts/issue_queue.py list todo              # one state, numeric order
-python3 scripts/issue_queue.py next                   # lowest-numbered todo (informational)
-python3 scripts/issue_queue.py next-group             # all claimable todo issues in the current group
-python3 scripts/issue_queue.py branch "001 Alpha.md"  # canonical branch, resolved in any state
-python3 scripts/issue_queue.py start "001 Alpha.md"   # todo -> inprogress (claims it)
-python3 scripts/issue_queue.py start "001 Beta.md"    # same-prefix sibling may also start
-python3 scripts/issue_queue.py finish "001 Alpha.md"  # inprogress -> review
-python3 scripts/issue_queue.py complete "001 Alpha.md" # review -> completed (accept, local)
-python3 scripts/issue_queue.py reopen "001 Alpha.md"  # review -> todo (reject)
-python3 scripts/issue_queue.py return "001 Alpha.md"  # inprogress -> todo (failed)
+python3 .opencode/scripts/issue_queue.py status                 # counts + issues per state
+python3 .opencode/scripts/issue_queue.py list todo              # one state, numeric order
+python3 .opencode/scripts/issue_queue.py next                   # lowest-numbered todo (informational)
+python3 .opencode/scripts/issue_queue.py next-group             # all claimable todo issues in the current group
+python3 .opencode/scripts/issue_queue.py branch "001 Alpha.md"  # canonical branch, resolved in any state
+python3 .opencode/scripts/issue_queue.py start "001 Alpha.md"   # todo -> inprogress (claims it)
+python3 .opencode/scripts/issue_queue.py start "001 Beta.md"    # same-prefix sibling may also start
+python3 .opencode/scripts/issue_queue.py finish "001 Alpha.md"  # inprogress -> review
+python3 .opencode/scripts/issue_queue.py complete "001 Alpha.md" # review -> completed (accept, local)
+python3 .opencode/scripts/issue_queue.py reopen "001 Alpha.md"  # review -> todo (reject)
+python3 .opencode/scripts/issue_queue.py return "001 Alpha.md"  # inprogress -> todo (failed)
 ```
 
 An issue can be addressed by a numeric prefix only when that prefix has one

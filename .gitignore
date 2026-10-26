@@ -4,7 +4,7 @@ __pycache__
 *.pyc
 *.log
 
-# Local, unversioned issue queue (scripts/issue_queue.py resolves it in the
+# Local, unversioned issue queue (.opencode/scripts/issue_queue.py resolves it in the
 # main checkout for every worktree). Root-anchored so the tracked installer
 # template under plugin/opencode-worktree/templates/issues/ stays versioned.
 /issues/

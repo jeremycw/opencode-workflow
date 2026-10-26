@@ -4,7 +4,7 @@
 
 This file is the behavioral contract between the user and the agents. It is
 injected into every agent's context in this project through the `instructions`
-field of `opencode.json`. Read it first, always. Workspace-specific notes live
+field of `.opencode/opencode.json`. Read it first, always. Workspace-specific notes live
 in AGENTS.md.
 
 ## 1. Division of responsibility
@@ -77,7 +77,7 @@ numeric prefix groups through four states: `todo` → `inprogress` → `review` 
   installer copies them into a project. The queue script defaults to the main
   checkout's `issues/` even from a linked worktree, and `--root` overrides it.
   All state moves (`start`/`finish`/`complete`/`reopen`/`return`) are local
-  filesystem moves through `scripts/issue_queue.py`; they create **no git
+  filesystem moves through `.opencode/scripts/issue_queue.py`; they create **no git
   commits** and are never staged or committed.
 - **Prefix groups:** the numeric prefix names a group. Groups are worked in
   ascending numeric order, and every `todo` issue sharing the current prefix
@@ -95,7 +95,7 @@ numeric prefix groups through four states: `todo` → `inprogress` → `review` 
   reported as blocked rather than committed or dispatched.
 - **Branch per issue:** every issue has one canonical branch,
   `issue/<zero-padded id>-<slug>`, resolved read-only with
-  `scripts/issue_queue.py branch "<exact filename>"` across all states. The
+  `.opencode/scripts/issue_queue.py branch "<exact filename>"` across all states. The
   slug is the lowercased title with each run of non-`[a-z0-9]` characters
   replaced by `-`, trimmed, capped at 60 characters (trimmed again), falling
   back to `issue`. Two issues mapping to the same branch is an error. The
@@ -169,7 +169,7 @@ numeric prefix groups through four states: `todo` → `inprogress` → `review` 
   `lead` directly and may still create per-task worktrees, then apply and
   delete them within the task. Only issue-dispatched leads defer integration
   and cleanup to the orchestrator's acceptance gate.
-- State moves go through `scripts/issue_queue.py` (no-clobber, locked) and are
+- State moves go through `.opencode/scripts/issue_queue.py` (no-clobber, locked) and are
   local-only; they are not commits. `/issues` defaults to one group per
   invocation; `all` processes groups sequentially but still stops each issue at
   `review`.

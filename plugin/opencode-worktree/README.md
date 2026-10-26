@@ -109,7 +109,7 @@ overriding a lower target value.
 | *(default)* | Installs the **full harness** when run from a harness checkout; otherwise falls back to plugin-only with a notice. |
 | `--plugin-only` | Installs only the worktree plugin (the old installer behavior). |
 | `--with-sandbox` | Also installs the sandbox demo project. Implies full harness; errors if no harness checkout is found. |
-| `--force` | Backs up and replaces an existing `AGENTS.md`, `.opencode/worktree.jsonc`, or `sandbox/`. A no-op in plugin-only mode. |
+| `--force` | Backs up and replaces an existing `.opencode/worktree.jsonc`, issue scaffolding, or `sandbox/`. A no-op in plugin-only mode. It no longer manages `AGENTS.md`. |
 | `-h`, `--help` | Show usage. |
 | `--` | End of options. |
 
@@ -119,14 +119,15 @@ npm artifacts untracked.
 
 ### What full mode installs
 
-- `opencode.json` — merged into any existing config (see guarantees below)
+- `.opencode/opencode.json` — merged into any existing config (see guarantees
+  below)
 - `.opencode/constitution.md`
 - `.opencode/agents/{orchestrator,lead,planner,coder,reviewer,researcher}.md`
 - `.opencode/commands/{issues,feature,ship,status}.md`
 - `.opencode/worktree.jsonc` — skipped if one already exists
-- `AGENTS.md` from `templates/AGENTS.md` — skipped if one already exists
-- `docs/validation.md`
-- `scripts/issue_queue.py` — the locked, no-clobber issue queue helper
+- `.opencode/scripts/issue_queue.py` — the locked, no-clobber issue queue
+  helper (it manages `<project>/issues` at the project root next to
+  `.opencode/`; linked worktrees share the main checkout's queue)
 - queue scaffolding copied from `templates/issues/` —
   `issues/README.md`, `issues/.gitignore`, and
   `issues/{todo,inprogress,review,completed}/.gitkeep`; existing project issue
@@ -154,16 +155,22 @@ With `--with-sandbox`, the nine files in `sandbox/` are copied too (never
 is given; with `--force` it is always backed up, removed, and recopied so stale
 generated files cannot survive.
 
-Full mode never copies `PLAN.md`, the root `README.md`/`TODO.md`/research
-notes, `.git`, `node_modules`, lockfiles, the harness's own installed
-`.opencode/plugin/`, or the plugin package's development files (`README`,
-`LICENSE`, `tsconfig`, `package.json`, `install.sh`, its local
+Full mode never installs harness docs, a target `AGENTS.md`, a root `scripts/`
+directory, or a root `opencode.json`. It also never copies `PLAN.md`, the root
+`README.md`/`TODO.md`/research notes, `.git`, `node_modules`, lockfiles, the
+harness's own installed `.opencode/plugin/`, or the plugin package's development
+files (`README`, `LICENSE`, `tsconfig`, `package.json`, `install.sh`, its local
 `.opencode/worktree.jsonc`). It never replaces the root `.gitignore` wholesale;
 it only appends the missing `/issues/` entry (with a backup).
 
+Legacy files already in a target are never deleted automatically. The installer
+**warns** about an old root `scripts/issue_queue.py`, `docs/validation.md`, or
+an `AGENTS.md` that still contains the old harness template marker, and leaves
+them untouched.
+
 ### Config merge guarantees
 
-`opencode.json` is merged with **existing keys winning**:
+`.opencode/opencode.json` is merged with **existing keys winning**:
 
 - Keys already in the target are kept, including unknown custom keys.
 - `default_agent` is never hijacked: it is set to the harness default
@@ -190,12 +197,15 @@ it only appends the missing `/issues/` entry (with a backup).
 - No write happens when the merged result is semantically unchanged, so target
   formatting is preserved for no-ops.
 - Invalid target JSON is backed up and the installer stops before any other
-  target write: `opencode.json` (full mode) and `.opencode/package.json` (both
-  modes), including non-object documents. An empty or whitespace-only
+  target write: `.opencode/opencode.json` (full mode) and
+  `.opencode/package.json` (both modes), including non-object documents. An empty or whitespace-only
   `.opencode/package.json` is accepted and populated with the runtime
   dependencies; non-empty invalid JSON still stops the run. A target
-  `opencode.jsonc` is rejected (exit 1) rather than guessed at — merge it
-  manually or use `--plugin-only`.
+  `.opencode/opencode.jsonc` is rejected (exit 1) rather than guessed at —
+  merge it manually or use `--plugin-only`. An existing root
+  `opencode.json`/`opencode.jsonc` only produces a warning: opencode loads
+  `.opencode/opencode.json` after the root config, so the harness config wins
+  on conflicting keys and the root file is left untouched.
 
 Dependency specs already present in `.opencode/package.json` are preserved; the
 installer keeps them and prints a note instead of overwriting. `@opencode-ai/sdk`
@@ -212,7 +222,7 @@ appended) are backed up first to:
 
 `.install-backups` is added to `.opencode/.gitignore`. The backup directory and
 its timestamped root are created with mode `0700`, and each backup preserves
-the source file's mode (for example a `0600` `opencode.json` stays `0600`).
+the source file's mode (for example a `0600` `.opencode/opencode.json` stays `0600`).
 Identical files are not backed up, and no `*.bak` files are written into
 loader-scanned directories such as `.opencode/agents/`, `.opencode/commands/`,
 or `.opencode/plugin/`.

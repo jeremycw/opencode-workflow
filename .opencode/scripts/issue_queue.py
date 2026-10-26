@@ -32,8 +32,10 @@ mid-move.
 
 By default the queue is the **main checkout's** ``issues/`` directory, so every
 linked worktree shares one queue. An explicit ``--root`` always overrides it.
-Outside a git worktree the default falls back beside this script; inside a git
-worktree a git failure is an error, never a silent worktree-local queue.
+Outside a git worktree the default falls back to ``<project>/issues`` beside
+``.opencode/``; this script lives in ``.opencode/scripts/``, so its project root
+is two levels up. Inside a git worktree a git failure is an error, never a
+silent worktree-local queue.
 
 Exit codes: 0 success, 1 domain error, 2 argparse usage error.
 """
@@ -151,25 +153,26 @@ def _default_root() -> Path:
     ``.git`` directory. A linked worktree therefore resolves the main
     checkout's ``issues/``; a monorepo subdirectory keeps its own
     ``<subdir>/issues`` relative to that main root. Outside a git worktree the
-    queue falls back beside this script, but a git failure inside one is an
-    error rather than a silent split into a worktree-local queue.
+    queue falls back to ``<project>/issues`` beside ``.opencode/``, but a git
+    failure inside one is an error rather than a silent split into a
+    worktree-local queue.
     """
-    script_root = Path(__file__).resolve().parent.parent
+    project_root = Path(__file__).resolve().parents[2]
     try:
-        top = Path(_git_output(script_root, "rev-parse", "--show-toplevel"))
-        common = Path(_git_output(script_root, "rev-parse", "--git-common-dir"))
+        top = Path(_git_output(project_root, "rev-parse", "--show-toplevel"))
+        common = Path(_git_output(project_root, "rev-parse", "--git-common-dir"))
     except (OSError, subprocess.SubprocessError) as error:
-        if _has_git_marker(script_root):
+        if _has_git_marker(project_root):
             raise QueueError(
                 "could not resolve the main checkout's issue queue: "
                 f"{error}; run from a git worktree with git available or pass --root"
             ) from None
-        return script_root / "issues"
+        return project_root / "issues"
 
     if not top.is_absolute():
-        top = script_root / top
+        top = project_root / top
     if not common.is_absolute():
-        common = script_root / common
+        common = project_root / common
     top = top.resolve()
     common = common.resolve()
 
@@ -180,11 +183,11 @@ def _default_root() -> Path:
             "run from a git worktree or pass --root"
         )
     try:
-        relative = script_root.relative_to(top)
+        relative = project_root.relative_to(top)
     except ValueError:
         raise QueueError(
             "could not resolve the main checkout's issue queue: "
-            f"{script_root} is not inside the git worktree {top}; pass --root"
+            f"{project_root} is not inside the git worktree {top}; pass --root"
         ) from None
     return common.parent / relative / "issues"
 
@@ -691,8 +694,9 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "queue root (default: the main checkout's issues/ directory, shared "
-            "by all worktrees; beside the script outside git. Inside a git "
-            "worktree a git failure is an error; --root overrides)"
+            "by all worktrees; at the project root next to .opencode/ outside "
+            "git. Inside a git worktree a git failure is an error; --root "
+            "overrides)"
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
