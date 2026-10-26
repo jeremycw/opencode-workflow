@@ -67,9 +67,18 @@ Everything else is executed autonomously.
 
 ## 3a. Issue orchestration contract
 
-`orchestrator` owns `issues/` and works it in numeric prefix groups through
-four states: `todo` → `inprogress` → `review` → `completed`.
+`orchestrator` owns the local issue queue under `issues/` and works it in
+numeric prefix groups through four states: `todo` → `inprogress` → `review` →
+`completed`.
 
+- **Local, unversioned queue:** `issues/` is git-ignored and untracked, and
+  every worktree shares the main checkout's queue. The canonical docs and
+  scaffolding live in `plugin/opencode-worktree/templates/issues/`; the full
+  installer copies them into a project. The queue script defaults to the main
+  checkout's `issues/` even from a linked worktree, and `--root` overrides it.
+  All state moves (`start`/`finish`/`complete`/`reopen`/`return`) are local
+  filesystem moves through `scripts/issue_queue.py`; they create **no git
+  commits** and are never staged or committed.
 - **Prefix groups:** the numeric prefix names a group. Groups are worked in
   ascending numeric order, and every `todo` issue sharing the current prefix
   belongs to the same group. The filename (prefix + title) is the unique issue
@@ -82,9 +91,8 @@ four states: `todo` → `inprogress` → `review` → `completed`.
   may be claimed and worked concurrently. Distinct prefixes are sequential.
 - **Claim before dispatch:** every `todo` member of the current group moves to
   `inprogress` *before* any `lead` is spawned, so interruptions cannot lose the
-  claim. The orchestrator commits only that claim batch (issue-state moves)
-  before dispatch so main is clean of issue moves for `worktree_apply`;
-  unrelated WIP is checked and reported as blocked rather than committed.
+  claim. The moves are local and commit nothing; unrelated WIP is checked and
+  reported as blocked rather than committed or dispatched.
 - **Branch per issue:** every issue has one canonical branch,
   `issue/<zero-padded id>-<slug>`, resolved read-only with
   `scripts/issue_queue.py branch "<exact filename>"` across all states. The
@@ -97,11 +105,11 @@ four states: `todo` → `inprogress` → `review` → `completed`.
   issue, in parallel, each in its own git worktree
   (`worktree_create` with the canonical branch and `baseBranch: "main"` → work,
   verify, and commit inside it → leave the branch and worktree intact). The
-  lead does not apply or merge the worktree, does not merge to the default
-  branch (`main` here; `master` where that is the default), does not delete
-  the worktree, reads the issue, stays in scope, commits issue-scoped changes,
-  never pushes, never edits/moves `issues/`, and never marks the issue
-  complete.
+  lead reads the issue from the main checkout path passed to it, does not
+  apply or merge the worktree, does not merge to the default branch (`main`
+  here; `master` where that is the default), does not delete the worktree,
+  stays in scope, commits issue-scoped changes, never pushes, never creates,
+  edits, moves, or commits queue files, and never marks the issue complete.
 - **Deferred finish:** no queue state is moved while any group lead may still
   be running. The orchestrator collects all group lead reports first, then
   verifies each success: the canonical branch exists
@@ -109,46 +117,62 @@ four states: `todo` → `inprogress` → `review` → `completed`.
   branch (`git rev-list --count refs/heads/<default>..refs/heads/<branch>` >
   0; `main` here, `master` where that is the default). A missing or
   zero-commit branch leaves the issue `inprogress` and is reported blocked.
-  Verified
-  successes are `finish`ed into `review`; blocked/failed work stays
+  Verified successes are `finish`ed into `review`; blocked/failed work stays
   `inprogress` (keeping the prefix active and blocking later groups until
-  returned/retried); the issue-state moves are committed together. Finish
-  never merges and never deletes a worktree.
+  returned/retried). The moves are local with no commit. Finish never merges
+  and never deletes a worktree.
 - **Review is the acceptance gate:** success moves the issue to `review`; only
   the user accepts (`review` → `completed`) or rejects (`review` → `todo`).
   Agents never self-accept. When siblings share a prefix in `review`, the user
-  accepts or rejects by exact filename. On explicit acceptance the orchestrator
-  preflights a clean main on the default branch, records `PRE_MERGE`, and
-  merges with `worktree_apply` (`mode: "merge"`). A clean merge is verified
-  (`git merge-base --is-ancestor`), both test suites run, then the issue is
-  completed and the merged worktree/branch deleted. On conflicts the
-  orchestrator does not abort; it dispatches exactly one fresh `lead`
-  "acceptance conflict resolver" in the main checkout to resolve in-scope
-  conflicts while preserving both sides' intent, with both test suites and an
-  independent `reviewer` approving; the resolver creates the merge commit with
-  `git commit --no-edit`, then the orchestrator independently verifies the
-  merge commit (`HEAD^2`), branch ancestry, clean status, and both suites
-  before completing and deleting. Out-of-scope/ambiguous conflicts or resolver
-  failure: while the acceptance merge is still provably in progress
-  (`MERGE_HEAD` matches this branch's tip and `HEAD` is `PRE_MERGE`), the
-  orchestrator aborts only that merge, restores the pre-merge main, and keeps
-  the issue in `review` with its branch/worktree intact; if the resolver
-  already committed, it cannot abort — it reports failed with main merged and
-  never resets/amends. It never resolves conflicts itself. One acceptance runs
-  at a time. On rejection/return it
-  deletes the worktree with `deleteBranch: "always"` and discards WIP *before*
-  the state move; an orphan branch without a worktree blocks instead.
+  accepts or rejects by exact filename. One acceptance runs at a time. On
+  explicit acceptance the orchestrator preflights a default branch that is
+  clean outside `issues/` while the queue is still tracked (one-time migration)
+  and has no merge in progress, no pre-existing `accept/<id>-<slug>`
+  branch/worktree,
+  and the canonical branch present; it performs the local `finish` move first
+  (bootstrap, never staged), records `PRE_MERGE`, snapshots the live queue
+  after that move, and creates a temporary `accept/<id>-<slug>` worktree from
+  the default branch. In that worktree it runs
+  `git merge --squash issue/<id>-<slug>` and creates exactly one commit
+  `issue <id>: <title>`. Conflicts are resolved by exactly one fresh `lead`
+  "acceptance conflict resolver" in the **temporary acceptance worktree** —
+  never in the main checkout — preserving both intents, with both test suites
+  and an independent `reviewer` approving before the resolver creates the
+  single squash commit. The orchestrator verifies exactly one commit above
+  `PRE_MERGE` (`git rev-list --count PRE_MERGE..HEAD` is 1), `HEAD^` equals
+  `PRE_MERGE`, clean status, both suites
+  (`python3 -m unittest discover -s tests` and
+  `python3 -m unittest discover -s sandbox`), and that main is still at
+  `PRE_MERGE` and clean outside the allowed local `issues/` paths; then it
+  fast-forwards main with `git merge --ff-only accept/<id>-<slug>` without
+  staging the local queue move (an accidentally staged move is unstaged with
+  `git restore --staged issues`). It restores the queue snapshot, verifies
+  `git ls-files issues` is empty and the queue is ignored, moves the issue to
+  `completed` locally with no commit, and deletes the temporary acceptance
+  worktree/branch and then the issue worktree/branch with
+  `deleteBranch: "always"` (after a squash the issue branch is not an ancestor,
+  so `auto` would keep it). The one-time committed-finish fallback resolves
+  tracked queue paths with `git rm -r --ignore-unmatch issues` in the accept
+  worktree, restores the queue from the snapshot, and otherwise follows the
+  same flow; an old session's attempt to stage and commit the queue files fails
+  and is a no-op. Failure before the fast-forward deletes the temporary
+  worktree/branch and keeps the issue in `review` with main and the issue
+  worktree/branch untouched; failure after the fast-forward is reported without
+  reset. The orchestrator never resolves conflicts itself and never resets or
+  rewrites history. On rejection/return it deletes the worktree with
+  `deleteBranch: "always"` and discards WIP *before* the local state move; an
+  orphan branch without a worktree blocks instead.
 - **Failure/interruption:** `blocked` or `failed` work stays `inprogress`
   with its branch and worktree intact for inspection; return it to `todo` only
   to retry or abandon it (cleanup before the move).
 - **Direct mode unchanged:** `/feature`, `/ship`, and `/status` start the
   `lead` directly and may still create per-task worktrees, then apply and
-  delete them within the task. Only issue-dispatched leads defer merge and
-  cleanup to the orchestrator's acceptance gate.
-- State moves go through `scripts/issue_queue.py` (no-clobber, locked); they
-  are the only commits the orchestrator may make. `/issues` defaults to one
-  group per invocation; `all` processes groups sequentially but still stops
-  each issue at `review`.
+  delete them within the task. Only issue-dispatched leads defer integration
+  and cleanup to the orchestrator's acceptance gate.
+- State moves go through `scripts/issue_queue.py` (no-clobber, locked) and are
+  local-only; they are not commits. `/issues` defaults to one group per
+  invocation; `all` processes groups sequentially but still stops each issue at
+  `review`.
 
 ## 4. Reporting format
 

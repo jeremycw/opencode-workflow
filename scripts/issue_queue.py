@@ -30,6 +30,11 @@ exclusive lock on ``issues/.lock`` so two agents cannot claim work at the same
 time. Reads hold a shared lock so they never observe an issue in two states
 mid-move.
 
+By default the queue is the **main checkout's** ``issues/`` directory, so every
+linked worktree shares one queue. An explicit ``--root`` always overrides it.
+Outside a git worktree the default falls back beside this script; inside a git
+worktree a git failure is an error, never a silent worktree-local queue.
+
 Exit codes: 0 success, 1 domain error, 2 argparse usage error.
 """
 
@@ -42,6 +47,7 @@ import errno
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -55,12 +61,13 @@ except ImportError:  # pragma: no cover
 STATES = ("todo", "inprogress", "review", "completed")
 IGNORED_NAMES = {"readme.md", ".gitkeep", ".gitignore"}
 ISSUE_RE = re.compile(r"^(\d{3,})\s+(.+)\.md$")
-DEFAULT_ROOT = Path(__file__).resolve().parent.parent / "issues"
 
 BRANCH_PREFIX = "issue/"
 SLUG_MAX = 60
 SLUG_FALLBACK = "issue"
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
+
+GIT_TIMEOUT = 5.0
 
 
 class QueueError(Exception):
@@ -105,8 +112,85 @@ class Issue:
         return f"{BRANCH_PREFIX}{self.id}-{slugify(self.title)}"
 
 
+def _git_output(script_root: Path, *args: str) -> str:
+    """Run a bounded, non-interactive git query from ``script_root``."""
+    env = dict(os.environ)
+    env.pop("GIT_DIR", None)
+    env.pop("GIT_WORK_TREE", None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = "true"
+    env["GCM_INTERACTIVE"] = "never"
+    result = subprocess.run(
+        ["git", *args],
+        cwd=str(script_root),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=GIT_TIMEOUT,
+        env=env,
+    )
+    if result.returncode != 0:
+        raise OSError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def _has_git_marker(path: Path) -> bool:
+    """Return whether ``path`` or an ancestor contains a ``.git`` file or dir."""
+    current = path.resolve()
+    for candidate in (current, *current.parents):
+        marker = candidate / ".git"
+        if marker.exists() or marker.is_symlink():
+            return True
+    return False
+
+
+def _default_root() -> Path:
+    """Resolve the main checkout's queue, shared by every linked worktree.
+
+    Inside git, the queue lives beside the repository root that owns the common
+    ``.git`` directory. A linked worktree therefore resolves the main
+    checkout's ``issues/``; a monorepo subdirectory keeps its own
+    ``<subdir>/issues`` relative to that main root. Outside a git worktree the
+    queue falls back beside this script, but a git failure inside one is an
+    error rather than a silent split into a worktree-local queue.
+    """
+    script_root = Path(__file__).resolve().parent.parent
+    try:
+        top = Path(_git_output(script_root, "rev-parse", "--show-toplevel"))
+        common = Path(_git_output(script_root, "rev-parse", "--git-common-dir"))
+    except (OSError, subprocess.SubprocessError) as error:
+        if _has_git_marker(script_root):
+            raise QueueError(
+                "could not resolve the main checkout's issue queue: "
+                f"{error}; run from a git worktree with git available or pass --root"
+            ) from None
+        return script_root / "issues"
+
+    if not top.is_absolute():
+        top = script_root / top
+    if not common.is_absolute():
+        common = script_root / common
+    top = top.resolve()
+    common = common.resolve()
+
+    if common.name != ".git":
+        raise QueueError(
+            "could not resolve the main checkout's issue queue: "
+            f"git common directory is {common}, not a .git directory; "
+            "run from a git worktree or pass --root"
+        )
+    try:
+        relative = script_root.relative_to(top)
+    except ValueError:
+        raise QueueError(
+            "could not resolve the main checkout's issue queue: "
+            f"{script_root} is not inside the git worktree {top}; pass --root"
+        ) from None
+    return common.parent / relative / "issues"
+
+
 def _root(root: Optional[os.PathLike[str] | str]) -> Path:
-    return Path(root) if root is not None else DEFAULT_ROOT
+    return Path(root) if root is not None else _default_root()
 
 
 def _is_ignored(name: str) -> bool:
@@ -605,7 +689,11 @@ def _parser() -> argparse.ArgumentParser:
         "--root",
         type=Path,
         default=None,
-        help="queue root (default: <repo>/issues)",
+        help=(
+            "queue root (default: the main checkout's issues/ directory, shared "
+            "by all worktrees; beside the script outside git. Inside a git "
+            "worktree a git failure is an error; --root overrides)"
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

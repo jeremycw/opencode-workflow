@@ -9,6 +9,8 @@ harness. They intentionally avoid live model sessions.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -17,6 +19,8 @@ from _frontmatter import load_frontmatter
 ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / ".opencode" / "agents"
 COMMANDS = ROOT / ".opencode" / "commands"
+TEMPLATE_ISSUES = ROOT / "plugin" / "opencode-worktree" / "templates" / "issues"
+GIT = shutil.which("git")
 
 
 def agent(name: str) -> dict:
@@ -113,8 +117,16 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertIn("COMMAND_FILES=(issues feature ship status)", installer)
         self.assertIn("ISSUE_STATES=(todo inprogress review completed)", installer)
+        self.assertIn('ISSUES_SRC="$SCRIPT_DIR/templates/issues"', installer)
+        self.assertNotIn('ISSUES_SRC="$HARNESS_ROOT/issues"', installer)
+        self.assertNotIn('grep -qxF -- "issues/" "$file"', installer)
+        self.assertIn('grep -qxF -- "$line" "$file"', installer)
         for token in (
             "scripts/issue_queue.py",
+            "templates/issues",
+            "/issues/",
+            "ensure_root_gitignore",
+            "git rm -r --cached issues",
             "issues/README.md",
             "issues/.gitignore",
             ".gitkeep",
@@ -122,13 +134,42 @@ class ConfigTests(unittest.TestCase):
             self.assertIn(token, installer)
 
     def test_issue_scaffolding_exists(self):
-        issues = ROOT / "issues"
+        issues = TEMPLATE_ISSUES
         for state in ("todo", "inprogress", "review", "completed"):
             with self.subTest(state=state):
                 self.assertTrue((issues / state).is_dir())
                 self.assertTrue((issues / state / ".gitkeep").is_file())
         self.assertTrue((issues / "README.md").is_file())
         self.assertIn(".lock", (issues / ".gitignore").read_text(encoding="utf-8"))
+
+    @unittest.skipUnless(GIT, "git is required to inspect the index")
+    def test_local_queue_is_untracked_and_ignored(self):
+        def git(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", *args],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+        tracked = git("ls-files", "issues")
+        self.assertEqual(tracked.returncode, 0, tracked.stderr)
+        self.assertEqual(tracked.stdout.strip(), "")
+
+        ignored = git("check-ignore", "-q", "--no-index", "issues/README.md")
+        self.assertEqual(ignored.returncode, 0, ignored.stderr)
+
+        template = git(
+            "check-ignore",
+            "-q",
+            "--no-index",
+            "plugin/opencode-worktree/templates/issues/README.md",
+        )
+        self.assertEqual(template.returncode, 1, template.stderr)
+
+        lines = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertIn("/issues/", lines)
 
     def test_docs_mention_issue_orchestration(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -164,7 +205,6 @@ class ConfigTests(unittest.TestCase):
             "next-group",
             "exact filename",
             "worktree_create",
-            "worktree_apply",
             "worktree_delete",
             "in parallel",
         ):
@@ -174,7 +214,7 @@ class ConfigTests(unittest.TestCase):
         for token in ("next-group", "every todo", "exact filename", "worktree", "in parallel"):
             self.assertIn(token, issues_text)
 
-        issues_readme = (ROOT / "issues" / "README.md").read_text(encoding="utf-8")
+        issues_readme = (TEMPLATE_ISSUES / "README.md").read_text(encoding="utf-8")
         for token in ("same-prefix", "next-group", "worktree", "exact filename"):
             self.assertIn(token, issues_readme)
 
@@ -182,53 +222,114 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("single-flight per prefix", constitution.lower())
         self.assertIn("worktree", constitution.lower())
 
-    def test_issue_branch_and_acceptance_contract_is_documented(self):
-        orchestrator = (AGENTS / "orchestrator.md").read_text(encoding="utf-8")
-        for token in (
-            "issue_queue.py branch",
-            "git rev-parse --verify",
-            "worktree_apply",
-            "worktree_resolve_conflicts",
-            "worktree_delete",
-            "deleteBranch",
-            "discover -s tests",
-            "discover -s sandbox",
-            "rev-list --count",
-            'deleteBranch: "always"',
-            "commitPending: false",
-        ):
-            self.assertIn(token, orchestrator, token)
-        self.assertNotIn("tip differs", orchestrator)
-        self.assertNotIn("same tip", orchestrator)
+    def test_issue_branch_and_squash_acceptance_contract_is_documented(self):
+        def normalized(path: Path) -> str:
+            return " ".join(path.read_text(encoding="utf-8").split())
 
-        lead = (AGENTS / "lead.md").read_text(encoding="utf-8")
-        self.assertIn("issue_queue.py branch", lead)
-        self.assertLowerIn("do not merge into the default branch", lead.lower())
-        self.assertIn("leave the branch and worktree intact", lead)
-        for token in ("branch", "worktree", "head SHA"):
-            self.assertIn(token, lead, token)
-        self.assertIn("git rev-parse --verify --quiet refs/heads/<canonical>", lead)
-        self.assertIn("worktree_list", lead)
-        self.assertIn("Outcome: blocked", lead)
+        orchestrator = normalized(AGENTS / "orchestrator.md")
+        self.assert_tokens(
+            orchestrator,
+            (
+                "issue_queue.py branch",
+                "git rev-parse --verify",
+                "worktree_create",
+                "merge --squash",
+                "accept/",
+                "--ff-only",
+                "rev-list --count",
+                'deleteBranch: "always"',
+                "commitPending: false",
+                "PRE_MERGE",
+                "snapshot",
+                "restore",
+                "acceptance conflict resolver",
+                "--diff-filter=U",
+                "reviewer",
+                "python3 -m unittest discover -s tests",
+                "python3 -m unittest discover -s sandbox",
+                "keep the issue in `review`",
+                "never reset",
+                "one acceptance at a time",
+                "never self-accept",
+            ),
+        )
+        for old in (
+            "git add issues",
+            'git commit -m "issues:',
+            'worktree_apply(branch, mode: "merge")',
+        ):
+            self.assertNotIn(old, orchestrator, old)
+
+        lead = normalized(AGENTS / "lead.md")
+        self.assert_tokens(
+            lead,
+            (
+                "issue_queue.py branch",
+                "git rev-parse --verify --quiet refs/heads/<canonical>",
+                "worktree_list",
+                "Outcome: blocked",
+                "leave the branch and worktree intact",
+                "do not merge into the default branch",
+                "acceptance conflict resolver",
+                "accept/",
+                "temporary",
+                "merge --squash",
+                "--diff-filter=U",
+                "git add",
+                'git commit -m "issue',
+                "reviewer",
+                "python3 -m unittest discover -s tests",
+                "python3 -m unittest discover -s sandbox",
+                "do not create a worktree",
+                "never touch the main checkout",
+            ),
+        )
+        self.assertNotIn("git commit --no-edit", lead)
 
         _, issues_text = command("issues")
-        for token in (
-            "branch",
-            "worktree_apply",
-            "worktree_delete",
-            "reopen",
-            "return",
-            "rev-list --count",
-            'deleteBranch: "always"',
-            "commitPending: false",
+        issues = " ".join(issues_text.split())
+        self.assert_tokens(
+            issues,
+            (
+                "next-group",
+                "every todo",
+                "exact filename",
+                "worktree",
+                "in parallel",
+                "branch",
+                "worktree_create",
+                "worktree_delete",
+                "merge --squash",
+                "accept/",
+                "--ff-only",
+                "rev-list --count",
+                'deleteBranch: "always"',
+                "commitPending: false",
+                "PRE_MERGE",
+                "snapshot",
+                "restore",
+                "acceptance conflict resolver",
+                "--diff-filter=U",
+                "python3 -m unittest discover -s tests",
+                "python3 -m unittest discover -s sandbox",
+                "reopen",
+                "return",
+            ),
+        )
+        for old in (
+            "git add issues",
+            "MERGE_HEAD",
+            "HEAD^2",
+            "worktree_resolve_conflicts",
+            "git commit --no-edit",
         ):
-            self.assertIn(token, issues_text, token)
+            self.assertNotIn(old, issues, old)
 
         _, ship_text = command("ship")
         self.assertIn("issue/*", ship_text)
         self.assertIn("acceptance", ship_text)
 
-        issues_readme = (ROOT / "issues" / "README.md").read_text(encoding="utf-8")
+        issues_readme = (TEMPLATE_ISSUES / "README.md").read_text(encoding="utf-8")
         self.assertIn("issue/<id>-<slug>", issues_readme)
         self.assertIn("branch", issues_readme)
 
@@ -243,79 +344,69 @@ class ConfigTests(unittest.TestCase):
             return " ".join(path.read_text(encoding="utf-8").split())
 
         orchestrator = normalized(AGENTS / "orchestrator.md")
-        for token in (
-            "acceptance conflict resolver",
-            "MERGE_HEAD",
-            "--diff-filter=U",
-            "HEAD^2",
-            "merge-base --is-ancestor",
-            "worktree_resolve_conflicts",
-            "reviewer",
-            "python3 -m unittest discover -s tests",
-            "python3 -m unittest discover -s sandbox",
-        ):
-            self.assertIn(token, orchestrator, token)
-        self.assertIn("keep the issue in `review`", orchestrator)
-        self.assertIn("never reset", orchestrator)
-        for token in (
-            "PRE_MERGE",
-            "one acceptance at a time",
-            "never self-accept",
-            "already committed",
-        ):
-            self.assertIn(token, orchestrator, token)
-        self.assertNotIn(
-            "If it reports conflicts — or a real merge is in progress", orchestrator
-        )
-        self.assertNotIn(
-            "Never resolve conflicts yourself (you have edit denied) and never reset.",
+        self.assert_tokens(
             orchestrator,
+            (
+                "acceptance conflict resolver",
+                "--diff-filter=U",
+                "reviewer",
+                "python3 -m unittest discover -s tests",
+                "python3 -m unittest discover -s sandbox",
+                "keep the issue in `review`",
+                "never reset",
+                "PRE_MERGE",
+                "one acceptance at a time",
+                "never self-accept",
+            ),
         )
+        for old in (
+            "MERGE_HEAD",
+            "HEAD^2",
+            "worktree_resolve_conflicts",
+            "git commit --no-edit",
+        ):
+            self.assertNotIn(old, orchestrator, old)
 
         lead = normalized(AGENTS / "lead.md")
-        for token in (
-            "acceptance conflict resolver",
-            "main checkout",
-            "MERGE_HEAD",
-            "--diff-filter=U",
-            "git add",
-            "git commit --no-edit",
-            "reviewer",
-            "python3 -m unittest discover -s tests",
-            "python3 -m unittest discover -s sandbox",
-            "Outcome: blocked",
-        ):
-            self.assertIn(token, lead, token)
-        self.assertIn("do not create a worktree", lead)
-
-        _, issues_text = command("issues")
-        issues = " ".join(issues_text.split())
-        for token in (
-            "acceptance conflict resolver",
-            "MERGE_HEAD",
-            "HEAD^2",
-            "is-ancestor",
-            "conflicted",
-            "worktree_resolve_conflicts",
-            "python3 -m unittest discover -s tests",
-            "python3 -m unittest discover -s sandbox",
-            "PRE_MERGE",
-            "one acceptance at a time",
-        ):
-            self.assertIn(token, issues, token)
-        self.assertNotIn("Never resolve conflicts yourself and never reset.", issues)
-
-        for name, text in (("orchestrator", orchestrator), ("issues", issues)):
-            with self.subTest(ordering=name):
-                self.assertLess(
-                    text.index("Probe `MERGE_HEAD` FIRST"),
-                    text.index("Only when no `MERGE_HEAD` exists, require clean"),
-                )
+        self.assert_tokens(
+            lead,
+            (
+                "acceptance conflict resolver",
+                "accept/",
+                "temporary",
+                "merge --squash",
+                "--diff-filter=U",
+                "git add",
+                'git commit -m "issue',
+                "reviewer",
+                "python3 -m unittest discover -s tests",
+                "python3 -m unittest discover -s sandbox",
+                "Outcome: blocked",
+                "do not create a worktree",
+                "never touch the main checkout",
+            ),
+        )
+        self.assertNotIn("git commit --no-edit", lead)
 
         constitution = normalized(ROOT / ".opencode" / "constitution.md")
-        for token in ("acceptance conflict resolver", "merge commit", "both test suites"):
-            self.assertIn(token, constitution, token)
-        self.assertIn("never self-accept", constitution.lower())
+        lower = constitution.lower()
+        for token in (
+            "squash",
+            "accept/",
+            "local",
+            "both test suites",
+            "never self-accept",
+        ):
+            self.assertIn(token, lower, token)
+        self.assertTrue("untracked" in lower or "git-ignored" in lower)
+        for old in (
+            "MERGE_HEAD",
+            "HEAD^2",
+            "git commit --no-edit",
+            'mode: "merge"',
+            "merge-base --is-ancestor",
+        ):
+            self.assertNotIn(old, constitution, old)
 
         for relative in (
             "README.md",
@@ -324,20 +415,58 @@ class ConfigTests(unittest.TestCase):
             "plugin/opencode-worktree/README.md",
         ):
             with self.subTest(document=relative):
-                text = normalized(ROOT / relative)
-                self.assertIn("conflict resolver", text.lower())
+                self.assertIn("squash", normalized(ROOT / relative).lower())
 
-        plan = normalized(ROOT / "PLAN.md")
-        self.assertIn("issue 004", plan.lower())
-        self.assertIn("conflict resolution", plan.lower())
-        self.assertNotIn(
-            "the orchestrator never resolves conflicts and never resets", plan.lower()
-        )
+        plan = normalized(ROOT / "PLAN.md").lower()
+        self.assertIn("issue 005", plan)
+        self.assertIn("issue 004", plan)
+        self.assertIn("conflict resolution", plan)
 
-        validation = normalized(ROOT / "docs" / "validation.md")
-        self.assertIn("issue 004", validation.lower())
-        self.assertIn("conflict resolution", validation.lower())
-        self.assertNotIn("orchestrator never resolves conflicts", validation.lower())
+        validation = normalized(ROOT / "docs" / "validation.md").lower()
+        self.assertIn("issue 005", validation)
+        self.assertIn("issue 004", validation)
+        self.assertIn("conflict resolution", validation)
+        self.assertIn("bootstrap", validation)
+
+        template_readme = normalized(TEMPLATE_ISSUES / "README.md")
+        template_lower = template_readme.lower()
+        self.assertTrue("git-ignored" in template_lower or "untracked" in template_lower)
+        for token in ("accept/", "snapshot"):
+            self.assertIn(token, template_readme, token)
+
+    def test_no_queue_state_commits_are_instructed(self):
+        documents = {
+            ".opencode/agents/orchestrator.md": (AGENTS / "orchestrator.md").read_text(
+                encoding="utf-8"
+            ),
+            ".opencode/agents/lead.md": (AGENTS / "lead.md").read_text(encoding="utf-8"),
+            ".opencode/commands/issues.md": command("issues")[1],
+            ".opencode/constitution.md": (
+                ROOT / ".opencode" / "constitution.md"
+            ).read_text(encoding="utf-8"),
+            "plugin/opencode-worktree/templates/issues/README.md": (
+                TEMPLATE_ISSUES / "README.md"
+            ).read_text(encoding="utf-8"),
+            "README.md": (ROOT / "README.md").read_text(encoding="utf-8"),
+            "AGENTS.md": (ROOT / "AGENTS.md").read_text(encoding="utf-8"),
+            "plugin/opencode-worktree/README.md": (
+                ROOT / "plugin" / "opencode-worktree" / "README.md"
+            ).read_text(encoding="utf-8"),
+        }
+        for name, text in documents.items():
+            with self.subTest(document=name):
+                for forbidden in (
+                    "git add issues",
+                    "git commit -- issues",
+                    'git commit -m "issues:',
+                ):
+                    self.assertNotIn(forbidden, text, f"{name}: {forbidden}")
+
+    def assert_tokens(self, text: str, tokens: tuple[str, ...]) -> None:
+        lower = text.lower()
+        for token in tokens:
+            haystack = text if any(character.isupper() for character in token) else lower
+            self.assertIn(token, haystack, token)
 
     def assertLowerIn(self, needle: str, haystack: str) -> None:
         self.assertIn(needle, haystack)

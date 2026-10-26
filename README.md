@@ -110,12 +110,17 @@ orchestrator may task the lead. For direct-mode work (`/feature`-style),
 independent tasks run in parallel worktrees: one worktree per task, one `coder`
 per worktree, merged back with `worktree_apply`. An issue-dispatched lead works
 inside its single issue worktree on the canonical issue branch and never
-merges; the orchestrator merges only after user acceptance.
+integrates it; only after user acceptance does the orchestrator stage one
+squash commit in a temporary acceptance worktree.
 
 ## Issue workflow
 
-`issues/` is a persistent queue owned by the `orchestrator` agent and moved
-only by `scripts/issue_queue.py`:
+`issues/` is a **local, git-ignored, untracked** queue owned by the
+`orchestrator` agent and moved only by `scripts/issue_queue.py`. It is shared
+by every worktree, and state moves are plain filesystem moves that create
+**no git commits**. The tracked canonical docs/scaffolding live in
+`plugin/opencode-worktree/templates/issues/`; the full installer copies them
+into a project.
 
 ```
 todo ──start──► inprogress ──finish──► review ──complete──► completed
@@ -136,26 +141,36 @@ todo ──start──► inprogress ──finish──► review ──complete
   canonical branch first (read-only), then moves every `todo` member of the
   group to `inprogress` *before* spawning one `lead` per issue. If a lookup or
   claim fails, or unrelated WIP dirties main, it returns the just-claimed
-  issues to `todo` and reports instead of dispatching.
+  issues to `todo` and reports instead of dispatching. These moves are local
+  and are never committed.
 - **One issue, one branch/worktree:** each issue has a canonical branch
   `issue/<id>-<slug>`; each lead works only there
   (`worktree_create` -> work/verify/commit inside -> leave branch and worktree
   intact). The orchestrator dispatches leads in parallel; an issue-dispatched
-  lead never applies, merges, or deletes the worktree.
-- **Clean main for merges:** the orchestrator commits only the claim batch
-  before dispatch, checks for unrelated WIP before dispatching, collects every
-  group lead report, then verifies each success branch exists and has at
-  least one commit beyond the default branch
-  (`git rev-list --count refs/heads/<default>..refs/heads/<branch>` > 0)
-  before committing the `finish` moves in one batch. Finish never merges or
-  deletes a worktree.
+  lead never applies, merges, or deletes the worktree, and never creates or
+  commits queue files.
+- **Local finish, no queue commits:** the orchestrator checks for unrelated
+  WIP before dispatching, collects every group lead report, then verifies each
+  success branch exists and has at least one commit beyond the default branch
+  (`git rev-list --count refs/heads/<default>..refs/heads/<branch>` > 0) before
+  running the local `finish` moves. Finish never merges or deletes a worktree.
 - **One queue owner:** run one `/issues` invocation at a time; concurrent
   invocations can split a group because there is no atomic group-claim command.
 - **Review is the acceptance gate:** a successful lead report moves the issue
-  to `review` with its branch unmerged; only the user accepts (`completed`,
-  which merges the branch, resolves conflicts through a dispatched fresh `lead`
-  acceptance conflict resolver in the main checkout when needed, verifies, and
-  cleans up) or rejects (`todo`, which discards the worktree). Agents never
+  to `review` with its branch unintegrated; only the user accepts or rejects
+  it. Acceptance preflights a default branch that is clean outside `issues/`
+  while the queue is still tracked (one-time migration), performs the local
+  `finish` move first when bootstrapping (never staged), snapshots the queue
+  after that move, and stages exactly one squash commit in a temporary
+  `accept/<id>-<slug>` worktree (`git merge --squash`, one commit, conflicts
+  resolved by a fresh `lead` in that same worktree). It verifies one commit
+  above `PRE_MERGE` plus both suites, fast-forwards main with `--ff-only`
+  without staging the local queue move, restores the queue snapshot (refreshing
+  the template README/.gitignore during the migration), completes locally
+  without a commit, and deletes both worktrees/branches with
+  `deleteBranch: "always"`. An already-committed finish uses the documented
+  fallback (`git rm -r --ignore-unmatch issues` in the accept worktree).
+  Rejection discards the worktree and returns the issue to `todo`. Agents never
   self-accept; with same-prefix siblings, accept/reject by exact filename. One
   acceptance runs at a time.
 - **Failure/interruption:** `blocked`/`failed` work stays `inprogress` with its
@@ -168,12 +183,16 @@ python3 scripts/issue_queue.py status          # queue counts + issue paths
 python3 scripts/issue_queue.py next-group      # every claimable todo in the current group
 python3 scripts/issue_queue.py branch "001 A.md" # canonical branch (any state)
 python3 scripts/issue_queue.py start "001 A.md" # claim before dispatch (exact filename)
-python3 scripts/issue_queue.py finish "001 A.md" # success -> review (no merge)
-python3 scripts/issue_queue.py complete "001 A.md" # user acceptance only (merge + cleanup)
+python3 scripts/issue_queue.py finish "001 A.md" # success -> review (local, no commit)
+python3 scripts/issue_queue.py complete "001 A.md" # user acceptance only (local, no commit)
 ```
 
-See `issues/README.md` for the full contract and file naming rules. State moves
-are no-clobber and locked through `issues/.lock`.
+The script defaults to the main checkout's queue even when run from a linked
+worktree; `--root` overrides it. See the canonical contract in
+`plugin/opencode-worktree/templates/issues/README.md` (copied to
+`issues/README.md` on install) for naming rules, squash acceptance, and the
+one-time migration/bootstrap. State moves are no-clobber and locked through
+`issues/.lock`.
 
 ## Agents
 
@@ -183,7 +202,7 @@ dispatched by the orchestrator. The rest are subagents.
 
 | Agent | Mode | Role | Access |
 |---|---|---|---|
-| **`orchestrator`** | primary | Issue queue owner. Works numeric prefix groups in ascending order, resolves canonical branches, claims every member of the active group before dispatch, sends one `lead` per issue in parallel worktrees, and moves success to `review` without merging. On explicit acceptance it merges with `worktree_apply`, verifies both suites, and deletes the merged worktree/branch; on conflicts it dispatches a fresh `lead` acceptance conflict resolver in the main checkout, then independently gates the merge commit before completing. Does not implement, plan, or resolve conflicts itself. | `edit`: **deny**; `todowrite`: allow; `task`: only `lead` (all else denied); `bash`: `*` → allow, with push/reset/branch-delete/clean/`rm -rf*`/publish and `issue_queue.py complete`/`reopen` → **ask** |
+| **`orchestrator`** | primary | Issue queue owner. Works numeric prefix groups in ascending order, resolves canonical branches, claims every member of the active group before dispatch, sends one `lead` per issue in parallel worktrees, and moves success to `review` without integrating it. Queue moves are local and create no commits. On explicit acceptance it stages exactly one squash commit in a temporary `accept/<id>-<slug>` worktree, resolves conflicts there through a fresh `lead`, verifies one commit above `PRE_MERGE` plus both suites, fast-forwards a main that is clean outside `issues/` while the queue is still tracked (one-time migration) with `--ff-only` without staging the local queue move, restores the queue snapshot, completes locally, and deletes both worktrees/branches with `deleteBranch: "always"`. Does not implement, plan, or resolve conflicts itself. | `edit`: **deny**; `todowrite`: allow; `task`: only `lead` (all else denied); `bash`: `*` → allow, with push/reset/branch-delete/clean/`rm -rf*`/publish and `issue_queue.py complete`/`reopen` → **ask** |
 | **`lead`** | all | Engineering lead. Takes feature-level objectives (directly or dispatched for one issue), runs the loop by delegating execution to subagents, coordinates from their reports, verifies, commits. Issue-dispatched, it works inside its canonical issue branch/worktree and never merges or deletes it. | `todowrite`: allow; `task`: only `planner`, `coder`, `reviewer`, `researcher`, `explore` (all else denied). `bash`: everything allowed **except** `git push*`, `git reset --hard*`, `git branch -D*`, `git clean -f*`, `git push --force*`, `rm -rf*` → **ask** |
 | **`planner`** | subagent | Architecture & planning. Maps the codebase, produces file-level implementation plans with tests and risks. | `edit` allowed for plans/notes/docs (no source changes); `bash` unrestricted except destructive git/`rm -rf*`/`npm publish*` → **ask**; `webfetch` allowed |
 | **`coder`** | subagent | Implementation. Writes production-quality code, runs tests/lint, iterates until green. | Full `bash` access **except** `git push*`, `git reset --hard*`, `git clean -f*`, `git branch -D*` → **deny** |
@@ -212,7 +231,7 @@ route to `lead`.
 
 | Command | Purpose |
 |---|---|
-| `/issues [status\|next\|all\|accept <id>\|reject <id>]` | Work the issue queue. Default is one prefix group: resolve canonical `issue/<id>-<slug>` branches, claim every member (`todo` → `inprogress`) before dispatch, send one `lead` per issue in parallel worktrees that never merge, stop at `review` with branches intact. `all` processes groups sequentially but still stops every issue at `review`; `accept` merges the branch, runs both suites, completes, and deletes the worktree, and on conflicts dispatches a fresh `lead` acceptance conflict resolver in the main checkout before verifying the merge commit; `reject` discards the worktree/branch before returning to `todo` (exact filename when a prefix is shared). |
+| `/issues [status\|next\|all\|accept <id>\|reject <id>]` | Work the issue queue. Default is one prefix group: resolve canonical `issue/<id>-<slug>` branches, claim every member (`todo` → `inprogress`) locally before dispatch, send one `lead` per issue in parallel worktrees that never integrate, stop at `review` with branches intact. Queue moves create no commits. `all` processes groups sequentially but still stops every issue at `review`; `accept` preflights a main that is clean outside `issues/` while the queue is still tracked (one-time migration), performs the local `finish` first when bootstrapping (never staged), snapshots the queue after it, stages one squash commit in a temporary `accept/<id>-<slug>` worktree (`git merge --squash`), resolves conflicts there through a fresh `lead`, verifies one commit above `PRE_MERGE` and both suites, fast-forwards main with `--ff-only` without staging the local queue move, restores the queue snapshot, completes locally without a commit, and deletes both worktrees/branches with `deleteBranch: "always"` (an already-committed finish uses the `git rm -r --ignore-unmatch issues` fallback); `reject` discards the worktree/branch before returning to `todo` (exact filename when a prefix is shared). |
 | `/feature <request>` | Start a feature-level request: "Add user authentication using OAuth…". Delegation-first: `lead` coordinates; `explore`/`planner`/`coder`/`reviewer`/`researcher` execute; independent tasks run in parallel worktrees. |
 | `/ship` | Close out current work: apply pending direct-mode worktrees (never unaccepted issue branches), verify, review (`explore` state check + `reviewer` pass + `coder` fixes), update docs, create routine commits. **Never pushes.** |
 | `/status` | Brief repo/git state: current branch, uncommitted changes, recent commits, work in progress, worktree state, and issue queue status. |
@@ -250,16 +269,18 @@ bash/`worktree_apply`, not a new terminal window.
 ├── AGENTS.md                  # Workspace notes (project facts, conventions)
 ├── opencode.json              # Config: constitution injection, orchestrator default, depth 2, permissions
 ├── RESEARCH-grok-build.md     # Research: grok-build harness (parallel tasks, worktrees)
-├── issues/                    # Issue queue: todo / inprogress / review / completed
-│   └── README.md              # Queue contract, naming, transitions, CLI
+├── issues/                    # LOCAL queue (git-ignored/untracked, shared by worktrees)
+│   └── README.md              # Local copy of the queue contract
 ├── scripts/
-│   └── issue_queue.py         # Deterministic, locked, no-clobber queue moves
-├── tests/                     # Harness config + issue-queue tests (stdlib unittest)
+│   └── issue_queue.py         # Deterministic, locked, no-clobber local queue moves
+├── tests/                     # Harness config + issue-queue + acceptance tests (stdlib unittest)
 ├── plugin/
 │   └── opencode-worktree/
 │       ├── install.sh          # Full-harness or plugin-only installer
 │       └── templates/
-│           └── AGENTS.md       # Neutral workspace notes for new projects
+│           ├── AGENTS.md       # Neutral workspace notes for new projects
+│           └── issues/         # Canonical queue scaffolding copied by full installs
+│               └── README.md   # Canonical queue contract
 ├── .opencode/
 │   ├── constitution.md        # Harness constitution (injected into every agent)
 │   ├── agents/                # orchestrator, lead, planner, coder, reviewer, researcher
@@ -270,11 +291,12 @@ bash/`worktree_apply`, not a new terminal window.
 │   ├── AGENTS.md              # Sandbox-specific conventions (nested AGENTS.md test)
 │   └── README.md              # Sandbox "product intent"
 ├── docs/
-│   └── validation.md          # Scenario checklist + sign-off (scenarios 1–24)
-└── .gitignore
+│   └── validation.md          # Scenario checklist + sign-off (scenarios 1–26)
+└── .gitignore                 # Contains the root-anchored /issues/ entry
 ```
 
-> Git-ignored items not shown: `.opencode/package.json` + lockfile + `node_modules/`.
+> Git-ignored items not shown: `issues/` (local queue),
+> `.opencode/package.json` + lockfile + `node_modules/`.
 > The runtime package is intentionally per-project (see `PLAN.md` §5.2); the
 > installer recreates it and runs the dependency install, so re-run it after a
 > fresh clone. The worktree plugin needs its runtime deps (`jsonc-parser`, `zod`)
@@ -296,13 +318,22 @@ bash/`worktree_apply`, not a new terminal window.
    worktree plugin, and merges `opencode.json` without overriding existing
    keys (`default_agent` is never hijacked; `instructions` are unioned;
    permissions are filled only where missing, and harness bash rules are only
-   added to an existing explicit `"*": "allow"` policy). Backups preserve file
-   modes under `.opencode/.install-backups/`, and invalid config/package JSON
-   stops the installer before any target write. Use `--plugin-only` to install
-   just the worktree plugin, `--with-sandbox` to include the demo project, or
-   `--force` to back up and replace template-owned files. **Restart opencode**
-   afterward — config is loaded once at startup, so restart after any change to
-   `opencode.json`, agents, commands, skills, or plugins.
+   added to an existing explicit `"*": "allow"` policy). Full mode also copies
+   the queue scaffolding from `plugin/opencode-worktree/templates/issues/` and
+   ensures the target's root `.gitignore` gains the root-anchored entry
+   `/issues/` (backup/append, never clobbering the file). The entry is
+   root-anchored so the harness checkout's
+   `plugin/opencode-worktree/templates/issues/` stays tracked; an installed
+   project simply has its local `issues/` plus this ignore. The local queue is
+   then untracked; if the target still tracks `issues/`, the installer warns
+   and the user runs `git rm -r --cached issues` (one-time migration). Backups
+   preserve file modes under `.opencode/.install-backups/`, and invalid
+   config/package JSON stops the installer before any target write. Use
+   `--plugin-only` to install just the worktree plugin, `--with-sandbox` to
+   include the demo project, or `--force` to back up and replace
+   template-owned files. **Restart opencode** afterward — config is loaded once
+   at startup, so restart after any change to `opencode.json`, agents,
+   commands, skills, or plugins.
 3. Run the harness and sandbox tests to confirm the environment:
 
    ```bash
@@ -311,8 +342,10 @@ bash/`worktree_apply`, not a new terminal window.
    ```
 
 4. Try the issue queue: add `<NNN> <title>.md` under `issues/todo/`, then
-   `/issues` (or `/issues all`). Success stops at `review`; accept explicitly
-   with `/issues accept <id>`.
+   `/issues` (or `/issues all`). The queue is local and untracked, so moves
+   create no commits. Success stops at `review`; accept explicitly with
+   `/issues accept <id>` (one squash commit in a temporary acceptance
+   worktree, then a fast-forward).
 5. Or run a direct feature: `/feature Add a --version flag to the sandbox CLI,
    with tests.` Close out with `/ship` — then review the report (`Done /
    Verified / Decisions / Needs you`).
@@ -327,18 +360,27 @@ The harness is validated end-to-end against `sandbox/` — see
   delegation depth, worktree create/merge-back/GC on Termux.
 - **Scenario 12** (constitution injection recitation) is applied and pending
   live verification after an opencode restart.
-- **Scenarios 17–24** (depth-2 dispatch, numeric order +
+- **Scenarios 17–26** (depth-2 dispatch, numeric order +
   claim-before-dispatch, canonical issue branches, failure stays `inprogress`,
-  review acceptance gate with merge-on-acceptance, acceptance conflict
-  resolution, and rejection cleanup, parallel same-prefix groups) are
-  configured and need a live session after an opencode restart.
+  review acceptance gate, parallel same-prefix groups, no-merge `finish`,
+  off-main local queue with one-commit squash acceptance, conflict resolution
+  in the temporary acceptance worktree, and the one-time queue migration
+  bootstrap) are configured and need a live session after an opencode restart.
+  Issue 005 replaced merge-on-accept with off-main squash acceptance: queue
+  moves are local and untracked, acceptance stages one squash commit in
+  `accept/<id>-<slug>`, and main is fast-forwarded with `--ff-only`. The
+  one-time bootstrap has a preferred new-prompt order (local `finish` first,
+  snapshot after it, clean preflight outside `issues/`, no extra queue commit)
+  and a committed-finish fallback for an old session.
 - **Phase 5** (package as a copyable template) is the final phase; Phase 4.6's
   structural items remain pending.
 
 ## Docs
 
 - `PLAN.md` — full implementation plan, decisions, phase status
-- `issues/README.md` — issue queue contract, naming, transitions, CLI
+- `plugin/opencode-worktree/templates/issues/README.md` — canonical issue
+  queue contract, naming, transitions, squash acceptance, CLI, migration
+  (installed as `issues/README.md`)
 - `docs/validation.md` — validation scenarios and sign-off
 - `RESEARCH-grok-build.md` — research on grok-build's parallel-task/worktree
   design and what was adopted

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import errno
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -727,6 +729,197 @@ class StatusAndCliTests(QueueTestCase):
             if holder.poll() is None:
                 holder.kill()
                 holder.wait(timeout=5)
+
+
+GIT = shutil.which("git")
+
+
+@unittest.skipUnless(GIT, "git is required for default-root resolution")
+class DefaultRootTests(unittest.TestCase):
+    """The default queue is the main checkout's issues/, not the worktree's."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+
+    def git(self, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            [GIT, *args], cwd=str(cwd), capture_output=True, text=True, timeout=30
+        )
+        self.assertEqual(
+            result.returncode, 0, f"git {' '.join(args)} failed: {result.stderr}"
+        )
+        return result
+
+    def init_repo(self, path: Path) -> Path:
+        path.mkdir(parents=True, exist_ok=True)
+        self.git(path, "init")
+        self.git(path, "symbolic-ref", "HEAD", "refs/heads/main")
+        self.git(path, "config", "user.name", "Test User")
+        self.git(path, "config", "user.email", "test@example.com")
+        self.git(path, "config", "commit.gpgsign", "false")
+        return path
+
+    def install_script(
+        self, root: Path, relative: str = "scripts/issue_queue.py"
+    ) -> Path:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(SCRIPT, destination)
+        return destination
+
+    def commit(self, root: Path, message: str) -> None:
+        self.git(root, "add", "-A")
+        self.git(root, "commit", "-m", message)
+
+    def run_queue(
+        self, script: Path, *args: str, cwd: Path | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), *args],
+            cwd=str(cwd or script.parent.parent),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def linked_worktree(self) -> tuple[Path, Path, Path]:
+        repo = self.init_repo(self.base / "repo")
+        self.install_script(repo)
+        todo = repo / "issues" / "todo"
+        todo.mkdir(parents=True)
+        (todo / "001 Main queue.md").write_text("# main\n", encoding="utf-8")
+        self.commit(repo, "base")
+
+        worktree = self.base / "worktree"
+        self.git(repo, "worktree", "add", "-b", "issue/005-demo", str(worktree), "main")
+        return repo, worktree, worktree / "scripts" / "issue_queue.py"
+
+    def test_linked_worktree_uses_the_main_checkout_queue(self):
+        repo, worktree, script = self.linked_worktree()
+
+        listed = self.run_queue(script, "list", "todo", cwd=worktree)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertEqual(listed.stdout.strip(), "issues/todo/001 Main queue.md")
+
+        started = self.run_queue(script, "start", "001 Main queue.md", cwd=worktree)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertIn("issues/inprogress/001 Main queue.md", started.stdout)
+        self.assertTrue((repo / "issues" / "inprogress" / "001 Main queue.md").is_file())
+        self.assertFalse((repo / "issues" / "todo" / "001 Main queue.md").exists())
+
+        # Only the main checkout queue moved; the worktree's checked-out copy
+        # and queue layout are untouched.
+        self.assertTrue((worktree / "issues" / "todo" / "001 Main queue.md").is_file())
+        self.assertFalse((worktree / "issues" / "inprogress").exists())
+
+    def test_linked_worktree_git_failure_does_not_split_the_queue(self):
+        repo = self.init_repo(self.base / "repo")
+        self.install_script(repo)
+        self.commit(repo, "base")
+
+        worktree = self.base / "worktree"
+        self.git(repo, "worktree", "add", "-b", "issue/005-demo", str(worktree), "main")
+        script = worktree / "scripts" / "issue_queue.py"
+        self.assertTrue(script.is_file())
+
+        # The worktree must not grow its own queue when git cannot run.
+        shutil.rmtree(worktree / "issues", ignore_errors=True)
+        self.assertFalse((worktree / "issues").exists())
+
+        empty_path = self.base / "empty-path"
+        empty_path.mkdir()
+        env = dict(os.environ)
+        env["PATH"] = str(empty_path)
+
+        listed = subprocess.run(
+            [sys.executable, str(script), "list", "todo"],
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        self.assertEqual(listed.returncode, 1, listed.stderr)
+        self.assertIn("could not resolve", listed.stderr)
+        self.assertIn("main checkout", listed.stderr)
+        self.assertIn("--root", listed.stderr)
+        self.assertFalse((worktree / "issues").exists())
+
+    def test_explicit_root_wins_in_a_linked_worktree(self):
+        _repo, worktree, script = self.linked_worktree()
+        worktree_queue = worktree / "issues"
+        (worktree_queue / "todo" / "002 Worktree queue.md").write_text(
+            "# worktree\n", encoding="utf-8"
+        )
+
+        default = self.run_queue(script, "list", "todo", cwd=worktree)
+        self.assertEqual(default.returncode, 0, default.stderr)
+        self.assertEqual(default.stdout.strip(), "issues/todo/001 Main queue.md")
+
+        explicit = self.run_queue(
+            script, "--root", str(worktree_queue), "list", "todo", cwd=worktree
+        )
+        self.assertEqual(explicit.returncode, 0, explicit.stderr)
+        self.assertEqual(
+            sorted(explicit.stdout.strip().splitlines()),
+            ["issues/todo/001 Main queue.md", "issues/todo/002 Worktree queue.md"],
+        )
+
+    def test_monorepo_subdirectory_resolves_its_own_queue(self):
+        repo = self.init_repo(self.base / "repo")
+        script = self.install_script(repo, "sub/scripts/issue_queue.py")
+        sub_todo = repo / "sub" / "issues" / "todo"
+        sub_todo.mkdir(parents=True)
+        (sub_todo / "001 Sub.md").write_text("# sub\n", encoding="utf-8")
+        root_todo = repo / "issues" / "todo"
+        root_todo.mkdir(parents=True)
+        (root_todo / "999 Root.md").write_text("# root\n", encoding="utf-8")
+        self.commit(repo, "base")
+
+        listed = self.run_queue(script, "list", "todo", cwd=repo)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertEqual(listed.stdout.strip(), "issues/todo/001 Sub.md")
+
+        started = self.run_queue(script, "start", "001 Sub.md", cwd=repo)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertTrue((repo / "sub" / "issues" / "inprogress" / "001 Sub.md").is_file())
+        self.assertTrue((root_todo / "999 Root.md").is_file())
+
+    def test_non_git_directory_falls_back_beside_the_script(self):
+        base = self.base / "nogit"
+        script = self.install_script(base)
+        todo = base / "issues" / "todo"
+        todo.mkdir(parents=True)
+        (todo / "001 Local.md").write_text("# local\n", encoding="utf-8")
+
+        listed = self.run_queue(script, "list", "todo", cwd=base)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertEqual(listed.stdout.strip(), "issues/todo/001 Local.md")
+
+    def test_unavailable_git_falls_back_beside_the_script(self):
+        base = self.base / "nogit"
+        script = self.install_script(base)
+        todo = base / "issues" / "todo"
+        todo.mkdir(parents=True)
+        (todo / "001 Local.md").write_text("# local\n", encoding="utf-8")
+        empty_path = self.base / "empty-path"
+        empty_path.mkdir()
+        env = dict(os.environ)
+        env["PATH"] = str(empty_path)
+
+        listed = subprocess.run(
+            [sys.executable, str(script), "list", "todo"],
+            cwd=str(base),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertEqual(listed.stdout.strip(), "issues/todo/001 Local.md")
+
 
 
 if __name__ == "__main__":

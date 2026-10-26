@@ -8,8 +8,9 @@ Close out the current work, delegation-first:
 1. Worktrees: `worktree_list`; apply only worktrees created by the current
    direct-mode task with `worktree_apply` (merge); resolve conflicts. NEVER
    apply a branch matching `issue/*` or any issue-review worktree — issue
-   branches merge only through `/issues accept` (the orchestrator's
-   acceptance gate).
+   branches integrate only through `/issues accept` squash acceptance (one
+   squash commit staged in a temporary `accept/<id>-<slug>` worktree, then a
+   fast-forward). Queue state is local and is never committed.
 2. State check: delegate to `explore` — uncommitted changes, docs that should
    have been updated, anything left behind.
 3. Verify: run the full test suite, lint, and type checks; delegate failures

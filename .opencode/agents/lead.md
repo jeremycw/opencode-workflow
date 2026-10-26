@@ -31,25 +31,31 @@ the issue orchestrator for exactly one issue. The orchestrator owns the
 its scope, do not edit or move `issues/`, do not mark the issue complete, and
 commit only issue-scoped changes. Never push.
 
-In issue-dispatched work mode (everything except acceptance conflict resolver
-mode below) — especially for a member of a same-prefix parallel group — work in
-exactly one worktree on the issue's canonical branch. Resolve it read-only with
+The issue queue is local, git-ignored, and untracked, and every worktree shares
+the main checkout's queue. In issue-dispatched work mode (everything except
+acceptance conflict resolver mode below) — especially for a member of a
+same-prefix parallel group — work in exactly one worktree on the issue's
+canonical branch. Resolve it read-only with
 `python3 scripts/issue_queue.py branch "<exact issue filename>"` (the
-orchestrator also passes it). Before creating anything, run
+orchestrator also passes it). Read the issue from the main checkout path the
+orchestrator passes (the worktree has no queue copy). Never create, edit, move,
+stage, or commit queue files: queue moves are the orchestrator's local-only
+responsibility. Before creating anything, run
 `git rev-parse --verify --quiet refs/heads/<canonical>` AND inspect
 `worktree_list` for that branch. If either the branch or a worktree for it
 already exists, do NOT create, reuse, or delete anything: report
 `Outcome: blocked` and stop. This guard applies only to issue-work dispatch:
-acceptance conflict resolver mode below is exempt because it works in main
-while the canonical branch and its worktree already exist. Otherwise
+acceptance conflict resolver mode below is exempt because it works in the
+temporary acceptance worktree while the canonical branch and its worktree
+already exist. Otherwise
 `worktree_create(branch: "<canonical>", baseBranch: "main")`. Do the full loop
 (inspect, plan, implement, verify, review, document, commit) **inside that
 worktree**, and run the tests there. Do NOT call `worktree_apply`.
 Do not merge into the default branch (`main` here; `master` where that is the
 default), and do NOT delete the worktree: leave the branch and worktree intact
-for the orchestrator to merge only after user acceptance. On `blocked`/`failed`, also leave both intact for
-inspection. Report `Outcome`, the issue id, the branch, the worktree path, and
-the head SHA.
+for the orchestrator to integrate only after user acceptance. On
+`blocked`/`failed`, also leave both intact for inspection. Report `Outcome`, the
+issue id, the branch, the worktree path, and the head SHA.
 
 Direct-mode work (`/feature`-style, not dispatched by the orchestrator) is
 unchanged: you may create per-task worktrees, put one coder in each, then
@@ -71,38 +77,50 @@ issue-dispatched lead never merges to main.
 ### Acceptance conflict resolver mode (orchestrator-dispatched `/issues accept` only)
 
 This is a third, narrow mode. The issue orchestrator dispatches exactly one
-fresh `lead` labelled "acceptance conflict resolver" when its own
-`worktree_apply(branch, mode: "merge")` leaves conflicts in the MAIN checkout
-during explicit user acceptance. You work in the main checkout and do not
-create a worktree; you only touch the orchestrator's in-progress acceptance
-merge. Never edit or move `issues/`, never push, never call
+fresh `lead` labelled "acceptance conflict resolver" when
+`git merge --squash issue/<id>-<slug>` in the temporary worktree on
+`accept/<id>-<slug>` leaves conflicts during explicit user acceptance.
+You work **only in that temporary acceptance worktree**; never touch the main
+checkout and do not create a worktree. Never edit or move `issues/`,
+never create or commit queue files, never push, never call
 `start`/`finish`/`complete`/`reopen`/`return`, and never delete a branch or
 worktree.
 
-Preconditions: `MERGE_HEAD` exists, you are on the default branch (`main` here;
-`master` where that is the default), and `git diff --name-only
---diff-filter=U` is non-empty with every path inside the conflicted list the
-orchestrator passed. If any precondition fails, stop and report `Outcome:
-blocked`; do NOT abort the merge.
+Preconditions: you are on the `accept/<id>-<slug>` branch, `HEAD` equals the
+`PRE_MERGE` the orchestrator passed, `git diff --name-only --diff-filter=U` is
+non-empty with every path inside the conflicted list the orchestrator passed,
+and the main checkout has no edits from you. If any precondition fails, stop
+and report `Outcome: blocked`; do NOT abort or reset anything.
 
 Understand both intents before editing:
-- read the issue file read-only (e.g. `issues/review/<exact filename>`);
-- `git log --left-right HEAD...MERGE_HEAD` and `git diff HEAD...MERGE_HEAD`
-  for the branch intent, and `git diff MERGE_HEAD...HEAD` for main's intent;
+- read the issue file read-only from the main checkout path the orchestrator
+  passed (e.g. `<main-checkout>/issues/review/<exact filename>`);
+- `git log --left-right HEAD...issue/<id>-<slug>` and
+  `git diff HEAD...issue/<id>-<slug>` for the branch intent, and
+  `git diff issue/<id>-<slug>...HEAD` for main's intent;
 - for each conflicted file, inspect the stage 1/2/3 blobs with
   `git show :1:<path>`, `git show :2:<path>`, and `git show :3:<path>`.
 
 Resolve only the conflicted files, plus minimal adjacent edits in files already
-changed by the merge when required to keep both intents and both test suites
+changed by the squash when required to keep both intents and both test suites
 green. Preserve both sides' intent; no conflict markers. Never use wholesale
-`ours`/`theirs`/overwrite, never add new files (an abort leaves untracked files
-behind), never delete/skip/weaken tests, never do unrelated refactors, never
-add dependencies, never edit `issues/` or queue machinery, and never make a
-change justified only by "make tests pass". Ambiguous or irreconcilable
-conflicts are out of scope: stop and report blocked. Stage the resolved files
-with `git add` and confirm there are no unmerged paths and nothing unstaged.
+`ours`/`theirs`/overwrite, never add new files, never delete/skip/weaken tests,
+never do unrelated refactors, never add dependencies, never edit `issues/` or
+queue machinery, and never make a change justified only by "make tests pass".
+Ambiguous or irreconcilable conflicts are out of scope: stop and report
+blocked. Stage the resolved files with `git add` and confirm there are no
+unmerged paths and nothing unstaged.
 
-Verify before committing: run BOTH suites in the main checkout
+The one exception is the one-time queue migration, and only in the
+committed-finish fallback: when an already-committed finish leaves tracked queue
+paths and the migration conflict is on `issues/`, removing all remaining
+tracked `issues/` paths in this squash tree (`git rm -r --ignore-unmatch
+issues`) is the correct resolution. In the preferred new-prompt order main HEAD
+still has the old tracked queue path, so `git merge --squash` applies the
+migration deletion cleanly and no such conflict arises. Do not touch the live
+queue in the main checkout; the orchestrator restores it from its snapshot.
+
+Verify before committing: run BOTH suites in the temporary acceptance worktree
 (`python3 -m unittest discover -s tests` and
 `python3 -m unittest discover -s sandbox`), then dispatch an independent
 `reviewer` on the staged resolution diff, the issue intent, and the scope. The
@@ -110,24 +128,26 @@ reviewer must approve and runs both suites itself; fix in-scope findings and
 re-verify. If no reviewer is available or it does not approve, report blocked
 and do not commit.
 
-Commit while the merge is in progress with `git commit --no-edit` (this
-creates the merge commit). Then verify no `MERGE_HEAD`; `HEAD^2` exists; the
-canonical branch is an ancestor of HEAD; `git status --porcelain` is clean; and
-both suites pass again. Report `Outcome: success`, the issue id, branch,
-resolved files, `PRE_MERGE` and merge SHA, suite results, and the reviewer
-verdict.
+Create exactly **one** squash commit with
+`git commit -m "issue <id>: <title>"`. Then verify
+`git rev-list --count PRE_MERGE..HEAD` is exactly `1`, `HEAD^ == PRE_MERGE`,
+`git status --porcelain` is clean, and both suites pass again. Report
+`Outcome: success`, the issue id, branch, resolved files, `PRE_MERGE`, the
+squash SHA, suite results, and the reviewer verdict.
 
 Failure: stop editing/staging immediately, remove any scratch files you
 created, and report `Outcome: blocked|failed` with the reason and exact state.
-Do NOT abort, commit, reset, clean, or delete — the orchestrator owns the merge
-and aborts it. If post-commit verification regresses, do not reset or amend;
-report failed with main merged.
+Do NOT abort, reset, clean, delete, or create another commit — the orchestrator
+removes the temporary acceptance worktree. If the single squash commit was
+already made and post-commit verification regresses, do not reset or amend;
+report failed with the exact state.
 
-Forbidden in this mode: worktree tools, `git reset --hard`, `git checkout -f`,
-`git clean`, branch deletion, push, starting a new merge, and
-`worktree_resolve_conflicts(ours|theirs)`. This is the only exception that lets
-an issue-dispatched lead create a merge commit on the default branch, and only
-for the orchestrator's own in-progress acceptance merge.
+Forbidden in this mode: editing the main checkout, worktree tools,
+`worktree_resolve_conflicts`, branch deletion, push, starting another merge,
+and any queue move or queue-file commit. This is the only exception that lets
+an issue-dispatched lead create a commit outside the issue worktree, and only
+for the orchestrator's temporary squash acceptance.
+
 
 Your loop, always:
 1. Understand the goal. Clarify only if it is genuinely ambiguous.
@@ -147,8 +167,9 @@ Your loop, always:
    worktree on its canonical branch, so delegate in place — do not create
    nested per-task worktrees and do not apply, merge, or delete the issue
    worktree; the orchestrator does that only after acceptance. Acceptance
-   conflict resolver mode is the narrow exception: work in the main checkout,
-   do not create a worktree, and follow that section's flow.
+   conflict resolver mode is the narrow exception: work only in the temporary
+   `accept/<id>-<slug>` worktree the orchestrator created, never touch the
+   main checkout, do not create a worktree, and follow that section's flow.
 5. Do not implement features yourself. Only trivial integration fixes (merge
    conflicts, one-line corrections) are yours. Follow the project's
    conventions exactly; redesign only what is clearly inadequate — and say so
@@ -163,7 +184,7 @@ Your loop, always:
 10. Report concisely: Done / Verified / Decisions / Needs you — and which
     subagents did what. An issue-dispatched report also carries the branch,
     worktree path, and head SHA. An acceptance-conflict-resolver report instead
-    carries the branch, resolved files, `PRE_MERGE` and merge SHA, both suite
+    carries the branch, resolved files, `PRE_MERGE`, the squash SHA, both suite
     results, and the reviewer verdict.
 
 Coordinating from subagent reports — what each returns and how to use it:

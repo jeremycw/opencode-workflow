@@ -127,10 +127,17 @@ npm artifacts untracked.
 - `AGENTS.md` from `templates/AGENTS.md` — skipped if one already exists
 - `docs/validation.md`
 - `scripts/issue_queue.py` — the locked, no-clobber issue queue helper
-- `issues/README.md`, `issues/.gitignore`, and
-  `issues/{todo,inprogress,review,completed}/.gitkeep` — scaffolding only;
-  existing project issue files/docs are kept unless `--force` (which backs up
-  and replaces)
+- queue scaffolding copied from `templates/issues/` —
+  `issues/README.md`, `issues/.gitignore`, and
+  `issues/{todo,inprogress,review,completed}/.gitkeep`; existing project issue
+  files/docs are kept unless `--force` (which backs up and replaces)
+- the target root `.gitignore` gains the root-anchored entry `/issues/`
+  (backup/append, never clobbering the existing file), so the local queue stays
+  untracked. The entry is root-anchored so a harness checkout keeps tracking
+  `plugin/opencode-worktree/templates/issues/`; an installed project simply has
+  its local `issues/` plus this ignore. If the target still tracks `issues/`,
+  the installer **warns** and tells the user to run
+  `git rm -r --cached issues` (one-time migration)
 - `src/plugin/` → `.opencode/plugin/` (per file; unrelated plugins are kept)
 - `.opencode/.gitignore` (created or appended with missing entries; it ignores
   `node_modules`, `package.json`, `package-lock.json`, `bun.lock`, and
@@ -148,10 +155,11 @@ is given; with `--force` it is always backed up, removed, and recopied so stale
 generated files cannot survive.
 
 Full mode never copies `PLAN.md`, the root `README.md`/`TODO.md`/research
-notes, the root `.gitignore`, `.git`, `node_modules`, lockfiles, the harness's
-own installed `.opencode/plugin/`, or the plugin package's development files
-(`README`, `LICENSE`, `tsconfig`, `package.json`, `install.sh`, its local
-`.opencode/worktree.jsonc`).
+notes, `.git`, `node_modules`, lockfiles, the harness's own installed
+`.opencode/plugin/`, or the plugin package's development files (`README`,
+`LICENSE`, `tsconfig`, `package.json`, `install.sh`, its local
+`.opencode/worktree.jsonc`). It never replaces the root `.gitignore` wholesale;
+it only appends the missing `/issues/` entry (with a backup).
 
 ### Config merge guarantees
 
@@ -268,28 +276,39 @@ worktrees in parallel; specialists never delegate.
 - `/issues` claims every `todo` issue in the current same-prefix group
   (`todo` → `inprogress`) **before** spawning one `lead` per issue, each in its
   own worktree on the canonical branch `issue/<zero-padded id>-<slug>`
-  (`issues/README.md` has the slug rule). The issue lead works and commits
-  inside that worktree but does **not** call `worktree_apply`, does not merge
-  to the default branch, and does not delete the worktree. Success lands in
-  `review` with branch and worktree intact for explicit **user** acceptance;
-  the orchestrator then applies it on acceptance (`worktree_apply` in `merge`
-  mode, both suites green, `complete`, then `worktree_delete` with
-  `deleteBranch: "auto"`). If the merge conflicts, it dispatches one fresh
-  `lead` acceptance conflict resolver in the main checkout (both suites +
-  independent `reviewer`, then `git commit --no-edit`), verifies the merge
-  commit, completes, and deletes. Lead dispatch/implementation failure stays
-  `inprogress` with the worktree intact; an acceptance failure keeps the issue
-  in `review` (aborting only a still-in-progress acceptance merge, or reporting
-  failed with main merged if the resolver already committed).
+  (`issues/README.md` has the slug rule). Queue moves are local and untracked
+  and create **no commits**. The issue lead works and commits inside that
+  worktree but does **not** call `worktree_apply`, does not merge to the
+  default branch, and does not delete the worktree. Success lands in `review`
+  with branch and worktree intact for explicit **user** acceptance.
+  Acceptance preflights a main that is clean outside `issues/` while the queue
+  is still tracked (one-time migration), performs the local `finish` first
+  when bootstrapping (never staged), snapshots the queue after that move, and
+  stages exactly one squash commit in a temporary worktree on
+  `accept/<id>-<slug>` (`git merge --squash issue/<id>-<slug>`),
+  resolves conflicts there through one fresh `lead` acceptance conflict
+  resolver (both suites + independent `reviewer`), verifies one commit above
+  `PRE_MERGE`, then fast-forwards main with `--ff-only` without staging the
+  local queue move. It restores the local queue snapshot (refreshing the
+  template README/.gitignore during the migration), completes locally without
+  a commit, and deletes the temporary and issue worktrees/branches with
+  `deleteBranch: "always"` (after a squash the issue branch is not an
+  ancestor, so `auto` would keep it). An already-committed finish uses the
+  fallback: resolve tracked queue paths with
+  `git rm -r --ignore-unmatch issues` in the accept worktree, then restore the
+  queue from the snapshot. Lead dispatch/implementation failure stays
+  `inprogress` with the worktree intact; an acceptance failure before the
+  fast-forward keeps the issue in `review` with main and the issue
+  worktree/branch untouched.
 - Direct-mode independent tasks (`/feature`-style) are **unchanged**:
   `worktree_create` each, then `worktree_apply(branch, mode: "merge")` back
   before the final report and `worktree_delete` after verification. Only an
-  issue-dispatched `lead` defers apply/merge/delete to the orchestrator's
+  issue-dispatched `lead` defers integration/cleanup to the orchestrator's
   acceptance gate.
 - Delegation depth is 2 (`subagent_depth: 2`): the orchestrator may task
   `lead`; `lead` may task planners/coders/reviewers; specialists never spawn
   subagents.
-- For **direct-mode** applies only, if an apply surfaces conflicts, resolve them with `worktree_resolve_conflicts(strategy: "ours"/"theirs")` and finish with `git commit`, or abort and re-plan. Acceptance conflicts instead use the selective acceptance conflict resolver above (no wholesale `ours`/`theirs`).
+- For **direct-mode** applies only, if an apply surfaces conflicts, resolve them with `worktree_resolve_conflicts(strategy: "ours"/"theirs")` and finish with `git commit`, or abort and re-plan. Acceptance conflicts instead use the selective acceptance conflict resolver in the temporary `accept/<id>-<slug>` worktree above (no wholesale `ours`/`theirs`, no merge on main).
 
 ## Security
 

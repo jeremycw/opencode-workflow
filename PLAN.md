@@ -13,7 +13,9 @@ constitution, agent team, commands, sandbox validation (scenarios 1–8), and th
 plugin fork + gap-fix round (scenarios 9–11) are all complete; see the per-phase status
 notes below. Phase 4.6's prompt-text portion is implemented; its structural
 enforcement and new commands remain pending. **Phase 4.7 (issue orchestration,
-depth-2 delegation) implemented 2026-10-22** — see below. **Phase 5 (portability —
+depth-2 delegation) implemented 2026-10-22** — see below; **issue 005
+(2026-10-23) moved the queue off main and replaced merge-on-accept with
+one-commit squash acceptance.** **Phase 5 (portability —
 copyable template, no global promotion) remains the final phase: planned, not
 started.** Phase 6 (dynamic model routing) removed.
 Constitution migrated to `.opencode/constitution.md` (injected via `instructions`;
@@ -104,14 +106,27 @@ agent when to use it.
     Issue-dispatched leads work and commit only inside that branch's worktree
     and never merge; `finish` verifies the branch exists and has at least one
     commit beyond the default branch (`git rev-list --count
-    refs/heads/<default>..refs/heads/<branch>` > 0) but does not merge. The
-    orchestrator merges
-    with `worktree_apply` only after user acceptance, runs both suites, then
-    completes and deletes the merged worktree/branch; acceptance conflicts are
+    refs/heads/<default>..refs/heads/<branch>` > 0) but does not merge. At the
+    time of issues 003/004 the orchestrator merged
+    with `worktree_apply` only after user acceptance, ran both suites, then
+    completed and deleted the merged worktree/branch; acceptance conflicts were
     resolved by a dispatched fresh `lead` acceptance conflict resolver (issue
-    004), then the merge is re-verified before completion. Rejection/return
+    004), then the merge was re-verified before completion. Rejection/return
     cleans up the worktree/branch before the state move. Direct-mode worktrees
-    are unchanged.
+    are unchanged; **issue 005 supersedes that acceptance path** (see below).
+    **Decision 10 update (2026-10-23, issue 005):** the queue is now local,
+    git-ignored, and untracked (root `.gitignore` `/issues/`), shared by all
+    worktrees, and all state moves are local with no commits; the canonical
+    queue docs/scaffolding live at
+    `plugin/opencode-worktree/templates/issues/`. Acceptance now stages exactly
+    one squash commit in a temporary `accept/<id>-<slug>` worktree
+    (`git merge --squash`), resolves conflicts there through a fresh `lead`,
+    verifies one commit above `PRE_MERGE` plus both suites, fast-forwards main
+    with `--ff-only`, restores the queue snapshot, completes locally without a
+    commit, and deletes both worktrees/branches with `deleteBranch: "always"`.
+    This **supersedes** the merge-on-accept mechanics recorded under issues
+    003/004 above (which remain historically accurate). The one-time migration
+    bootstrap is documented; existing `issues:` commits are never rewritten.
 
 ## 4. Target architecture
 
@@ -964,19 +979,101 @@ resets, never resolves conflicts itself, and one acceptance runs at a time. The
 clean/fast-forward merge path (no `HEAD^2` required) and "agents never
 self-accept" are unchanged.
 
+**Decision update (2026-10-23, issue 005):** the queue moves **off main** and
+acceptance becomes a **squash**. `issues/` is now a local, git-ignored,
+untracked queue shared by every worktree; the root `.gitignore` contains the
+root-anchored `/issues/` entry specifically so
+`plugin/opencode-worktree/templates/issues/` stays tracked, and the canonical
+docs/scaffolding live there for the full installer. All state
+moves (`start`/`finish`/`complete`/`reopen`/`return`) are pure local filesystem
+moves through `scripts/issue_queue.py`; they create **no git commits** and are
+never staged or committed. The script defaults to the main checkout's queue
+even from a linked worktree (git common dir resolution); outside git (no `.git`
+marker) it falls back beside the script, while a git failure or timeout inside a
+git worktree is an error with the `--root` override, never a silent
+worktree-local split. `--root` overrides the root. Claim and finish remain
+local; the pre-dispatch unrelated-WIP check remains but is no longer about
+committing queue moves.
+
+On explicit user acceptance the orchestrator preflights a default branch that
+is **clean outside `issues/` while the queue is still tracked (one-time
+migration)** and has no merge in progress, no pre-existing
+`accept/<id>-<slug>` branch/worktree, and the canonical branch present. For the
+one-time bootstrap it performs the local `finish` move first (plain rename;
+never staged or committed), records `PRE_MERGE`, snapshots the live queue after
+that move (so the snapshot contains the review state), and creates a temporary
+`accept/<id>-<slug>` worktree from the default branch. In that worktree it runs
+`git merge --squash issue/<id>-<slug>` and creates exactly one commit
+`issue <id>: <title>`; on the preferred new-prompt order the migration deletion
+applies cleanly because main HEAD still has the old tracked queue path.
+Conflicts are resolved by exactly one fresh `lead` "acceptance conflict
+resolver" in the **temporary acceptance worktree** (never the main checkout,
+never by merging there), preserving both intents, with both suites and an
+independent `reviewer` approving before the single squash commit. The
+orchestrator verifies exactly one commit above `PRE_MERGE`
+(`git rev-list --count PRE_MERGE..HEAD` is 1), `HEAD^` equals `PRE_MERGE`,
+clean status, both suites, and that main is still at `PRE_MERGE` and clean
+outside the allowed local `issues/` paths; it then fast-forwards main with
+`git merge --ff-only accept/<id>-<slug>` without staging the local queue move
+(an accidentally staged move is undone with `git restore --staged issues`). The
+unstaged deletion plus untracked new queue path survive the fast-forward. It
+restores the queue snapshot, verifies the review file survives,
+`git ls-files issues` is empty and `/issues/` is ignored, refreshes the local
+`README.md`/`.gitignore` from the template during the migration, moves the issue
+to `completed` locally with no commit, and deletes the temporary acceptance
+worktree/branch and then the issue worktree/branch with
+`deleteBranch: "always"` (after a squash the issue branch is not an ancestor,
+so `auto` would keep it). Failure before the fast-forward deletes the
+temporary worktree/branch and keeps the issue in `review` with main and the
+issue worktree/branch untouched; failure after the fast-forward is reported
+without reset. One acceptance runs at a time; agents never self-accept.
+
+Because main currently tracks `issues/`, the 005 migration commit
+(`git rm -r --cached issues` plus root-anchored `/issues/`) means merging or
+fast-forwarding the branch removes the formerly tracked queue files from main's
+working tree. The **preferred new-prompt bootstrap** (no extra queue commit)
+keeps `finish` a local unstaged rename, requires a preflight clean outside
+`issues/` while `git ls-files issues` is non-empty, records `PRE_MERGE` and
+snapshots the queue **after** the finish move (review state), creates
+`accept/<id>-<slug>` from main HEAD, and `git merge --squash`es the migration
+branch: the deletion applies cleanly because main HEAD still has the old tracked
+queue path. It creates one commit, verifies it and both suites, fast-forwards
+with `--ff-only` without staging the local queue move (an accidentally staged
+move is undone with `git restore --staged issues`), refreshes
+`README.md`/`.gitignore` from the template, verifies the queue is untracked and
+ignored, and completes locally without committing.
+
+The **committed-finish fallback** handles an old session (or a manual
+bootstrap) that already committed the finish: main is clean but has a tracked
+`issues/review/<file>` path that the migration branch does not delete, so
+`git merge --squash` conflicts on queue paths. Resolve in the accept worktree
+with `git rm -r --ignore-unmatch issues`, create the one commit, `--ff-only`,
+restore the queue from the snapshot taken at accept time, refresh the template
+files, and complete locally without committing. An old session's attempt to
+stage and commit the queue files fails and is a documented no-op — never
+`git add -f`; local queue state is authoritative. The old merge-on-accept flow
+cannot safely finish 005. Existing `issues:` commits already on main remain;
+history is never rewritten, and 005 may therefore have a pre-accept management
+commit in the old fallback.
+
+**Historical note:** the 003/004 acceptance mechanics recorded above (merge on
+main, main-checkout conflict resolver, merge-commit gates) are preserved as the
+decisions in force at the time but are **superseded by issue 005** for current
+behavior.
+
 ### 4.7.1 Changes
 
 | File | Change |
 |---|---|
-| `.opencode/agents/orchestrator.md` | **NEW** primary agent: `edit: deny`, `todowrite: allow`, `task` allowlist only `lead`, bash queue/git safety gates; resolves canonical branches before claiming, claims every group member before dispatch, launches one `lead` per issue in parallel worktrees, verifies success branches at `finish` (no merge), and only merges via `worktree_apply` after acceptance; on conflicts dispatches one fresh `lead` acceptance conflict resolver in main and gates on `MERGE_HEAD` gone, `HEAD^2`, branch ancestry, clean status, and both suites; aborts/restores only while its own acceptance merge is provably in progress (post-commit failure reports main merged); never implements/plans/resolves conflicts itself |
-| `.opencode/agents/lead.md` | `mode: all`, `todowrite: allow`; prompt covers direct start vs. dispatched-for-one-issue vs. orchestrator acceptance conflict resolver, canonical-branch worktree create/work/commit inside, no apply/merge/delete when dispatched (direct-mode worktrees unchanged), resolver work in the main checkout on the in-progress merge only, issue scope rules, `Outcome:` + issue id + branch/worktree/head SHA in reports |
+| `.opencode/agents/orchestrator.md` | **NEW** primary agent: `edit: deny`, `todowrite: allow`, `task` allowlist only `lead`, bash queue/git safety gates; resolves canonical branches before claiming, claims every group member locally before dispatch, launches one `lead` per issue in parallel worktrees, verifies success branches at `finish` (no merge, no queue commit); on acceptance snapshots the queue, stages one squash commit in a temporary `accept/<id>-<slug>` worktree, dispatches one fresh `lead` acceptance conflict resolver **in that worktree** when needed, verifies one commit above `PRE_MERGE` plus both suites, fast-forwards main with `--ff-only`, restores the queue, completes locally, and deletes both worktrees/branches with `deleteBranch: "always"`; failure before the fast-forward keeps the issue in `review` with main untouched; never implements/plans/resolves conflicts itself |
+| `.opencode/agents/lead.md` | `mode: all`, `todowrite: allow`; prompt covers direct start vs. dispatched-for-one-issue vs. orchestrator acceptance conflict resolver; dispatched leads read the issue from the main checkout path passed in, work on the canonical branch, never create/commit queue files, and do not apply/merge/delete the issue worktree (direct-mode worktrees unchanged); resolver works only in the temporary `accept/<id>-<slug>` worktree, preserves both intents, runs both suites + independent `reviewer`, creates the one squash commit, and never touches main or deletes anything; `Outcome:` + issue id + branch/worktree/head SHA in reports |
 | `opencode.json` | `default_agent: orchestrator`; `subagent_depth: 2` (opencode >= 1.18.2) |
-| `.opencode/commands/issues.md` | **NEW** `/issues [status\|next\|all\|accept <id>\|reject <id>]`, one prefix group by default, `all` walks groups sequentially and stops each issue at review; `accept` merges and, on conflicts, dispatches the acceptance conflict resolver before verifying and completing |
+| `.opencode/commands/issues.md` | **NEW** `/issues [status\|next\|all\|accept <id>\|reject <id>]`, one prefix group by default, `all` walks groups sequentially and stops each issue at review; claim/finish are local with no commits; `accept` stages one squash commit in a temporary `accept/<id>-<slug>` worktree, resolves conflicts there, verifies, fast-forwards with `--ff-only`, restores the queue snapshot, completes locally, and deletes both branches/worktrees with `deleteBranch: "always"` |
 | `.opencode/commands/status.md` | Adds queue status |
-| `scripts/issue_queue.py` | **NEW** stdlib queue helper: prefix groups, single-flight per prefix, exact-filename disambiguation, `next-group`, canonical branch resolution (`branch`, `slugify`, `Issue.branch`, collision = error), no-clobber moves, `fcntl` lock, `--root`, CLI exit codes 0/1/2 |
-| `issues/` | `README.md` contract (including canonical branches and the acceptance merge), `.gitignore` (`.lock`), four state dirs with `.gitkeep` |
-| `tests/` | **NEW** structural harness config tests + queue behavior tests (stdlib `unittest`, no PyYAML), including same-prefix group concurrency, `next-group`, slug/branch resolution and collision behavior |
-| Installer + docs | Full-mode install of orchestrator, `/issues`, queue script and issue scaffolding; config merge warns on `subagent_depth < 2`; README/AGENTS/constitution/validation updated |
+| `scripts/issue_queue.py` | **NEW** stdlib queue helper: prefix groups, single-flight per prefix, exact-filename disambiguation, `next-group`, canonical branch resolution (`branch`, `slugify`, `Issue.branch`, collision = error), no-clobber local moves (no commits), `fcntl` lock, main-checkout default root from linked worktrees, `--root`, CLI exit codes 0/1/2 |
+| `issues/` | **LOCAL, git-ignored, untracked** queue shared by all worktrees: `README.md` contract (canonical branches, squash acceptance, migration), `.gitignore` (`.lock`), four state dirs with `.gitkeep`; canonical docs/scaffolding tracked at `plugin/opencode-worktree/templates/issues/` |
+| `tests/` | **NEW** structural harness config tests + queue behavior tests (stdlib `unittest`, no PyYAML), including same-prefix group concurrency, `next-group`, slug/branch resolution and collision behavior, queue default-root resolution from a linked worktree, and the one-commit squash acceptance integration (`tests/test_acceptance_squash.py`) |
+| Installer + docs | Full-mode install of orchestrator, `/issues`, queue script and queue scaffolding from `templates/issues/`; root `.gitignore` gains `/issues/` (backup/append) with a tracked-queue migration warning; config merge warns on `subagent_depth < 2`; README/AGENTS/constitution/validation/PLAN updated for the local queue and squash acceptance |
 
 ### 4.7.2 Contract
 
@@ -990,25 +1087,25 @@ self-accept" are unchanged.
   states; duplicate branches are an error. The orchestrator resolves every
   member's branch before claiming and passes it to each lead explicitly.
 - Every member of the current group is claimed before any dispatch. A partial
-  claim failure, failed branch lookup, or unrelated WIP after the claim commit
-  returns the just-claimed issues to `todo` and commits only those issue-state
-  moves; one issue gets one lead, and each lead works only inside its canonical
-  branch's git worktree (`worktree_create` with `baseBranch: "main"` →
-  work/verify/commit inside → leave branch and worktree intact). The lead never
+  claim failure, failed branch lookup, or unrelated WIP after the claim returns
+  the just-claimed issues to `todo` as local moves (no commits); one issue gets
+  one lead, and each lead works only inside its canonical branch's git worktree
+  (`worktree_create` with `baseBranch: "main"` → work/verify/commit inside →
+  leave branch and worktree intact). The lead reads the issue from the main
+  checkout path passed in, never creates or commits queue files, and never
   applies, merges to the default branch, or deletes the worktree.
-- The orchestrator commits only the claim batch (issue-state moves) before
-  dispatch, then checks `git status --porcelain` and does not dispatch if
-  unrelated WIP remains. It collects all group lead reports before moving any
-  state, then verifies each success branch exists and has at least one commit
-  beyond the default branch (`git rev-list --count
+- The orchestrator makes only local queue moves: no claim/finish commit. It
+  checks `git status --porcelain` and does not dispatch if unrelated WIP
+  remains. It collects all group lead reports before moving any state, then
+  verifies each success branch exists and has at least one commit beyond the
+  default branch (`git rev-list --count
   refs/heads/<default>..refs/heads/<branch>` > 0; a zero-commit branch is
-  blocked); only then does it commit
-  the success `finish` moves together. `finish` never merges or deletes a
-  worktree. A group is **not** finished while any member remains `inprogress`;
-  blocked/failed members keep the prefix active and block later groups until
-  returned/retried.
-- Starting a new group while `review` issues still have unmerged branches is a
-  warning, not a block; those branches merge only on acceptance.
+  blocked); only then does it run the success `finish` moves, locally. `finish`
+  never merges or deletes a worktree. A group is **not** finished while any
+  member remains `inprogress`; blocked/failed members keep the prefix active
+  and block later groups until returned/retried.
+- Starting a new group while `review` issues still have unintegrated branches
+  is a warning, not a block; those branches are integrated only on acceptance.
 - The filename is the unique identity: an identical filename across states is
   an error; numeric ids resolve within the expected state and are ambiguous
   when siblings share that state, so callers use the exact filename.
@@ -1017,29 +1114,43 @@ self-accept" are unchanged.
   Review is the acceptance gate: only the user runs `/issues accept` or
   `/issues reject` (exact filename when a prefix is shared); agents never
   self-accept.
-- Acceptance preflights a clean main on the default branch (`main` here;
-  `master` where that is the default), records `PRE_MERGE`, and merges the
-  canonical branch with `worktree_apply(mode: "merge")`. A clean merge is
-  verified (`git merge-base --is-ancestor`; no `HEAD^2` requirement for a
-  fast-forward), both test suites run, then the issue is `complete`d and the
-  merged worktree/branch deleted. On conflicts the orchestrator does not abort:
-  it dispatches exactly one fresh `lead` "acceptance conflict resolver" in the
-  main checkout with the exact issue filename (read-only), canonical branch,
-  conflicted files, and `PRE_MERGE`. The resolver resolves only in-scope
-  conflicts while preserving both intents, runs both suites, obtains an
-  independent `reviewer` approval, and creates the merge commit with
-  `git commit --no-edit`; the orchestrator then independently gates on
-  `MERGE_HEAD` gone, `HEAD^2`, branch ancestry, clean `git status --porcelain`,
-  and both suites before completing and deleting. Out-of-scope/ambiguous
-  conflicts or resolver failure: while the orchestrator's acceptance merge is
-  still provably in progress (`MERGE_HEAD` matches this branch's tip and `HEAD`
-  is `PRE_MERGE`), abort only that merge, verify restoration to `PRE_MERGE`,
-  and keep the issue in `review` with branch/worktree intact; if the resolver
-  already committed, it cannot abort, so report failed with main merged and
-  never reset/amend. The orchestrator never resets main, never resolves
-  conflicts itself, and runs one acceptance at a time. A red suite after a
-  clean merge or a failed resolver gate also keeps the issue in `review`
-  without resetting or deleting.
+- Acceptance preflights the default branch (`main` here; `master` where that is
+  the default) **clean outside `issues/` while the queue is still tracked
+  (one-time migration)** with no merge in progress, no pre-existing
+  `accept/<id>-<slug>` branch/worktree, and the canonical branch present. For
+  the one-time bootstrap it performs the local `finish` first (plain rename;
+  never staged), records `PRE_MERGE`, snapshots the live local queue **after**
+  that move (review state), and creates a temporary `accept/<id>-<slug>`
+  worktree from the default branch. In that worktree it runs
+  `git merge --squash issue/<id>-<slug>` and creates exactly one commit
+  `issue <id>: <title>`; the preferred new-prompt order applies the migration
+  deletion cleanly because main HEAD still has the old tracked queue path.
+  Conflicts are resolved by exactly one fresh `lead` "acceptance conflict
+  resolver" in the **temporary acceptance worktree** with the exact issue
+  filename (read-only from the main checkout path), canonical branch,
+  conflicted files, and `PRE_MERGE`; it preserves both intents, runs both
+  suites, obtains an independent `reviewer` approval, and creates the single
+  squash commit. The orchestrator verifies exactly one commit above
+  `PRE_MERGE` (`git rev-list --count PRE_MERGE..HEAD` is 1), `HEAD^` equals
+  `PRE_MERGE`, clean status, both suites, and that the squash contains the
+  branch's changes; it then verifies main is still at `PRE_MERGE` and clean
+  outside the allowed local `issues/` paths and fast-forwards with
+  `git merge --ff-only accept/<id>-<slug>` without staging the local queue move
+  (accidental staging is undone with `git restore --staged issues`), checking
+  main's HEAD equals the squash SHA. It restores the queue snapshot, verifies
+  the review file survives, `git ls-files issues` is empty and `/issues/` is
+  ignored, refreshes the template README/.gitignore during the migration,
+  completes the issue locally (no commit), and deletes the temporary acceptance
+  worktree/branch and then the issue worktree/branch with
+  `deleteBranch: "always"` (after a squash the issue branch is not an
+  ancestor, so `auto` would keep it). An already-committed finish uses the
+  fallback: `git rm -r --ignore-unmatch issues` in the accept worktree, then
+  restore the queue from the snapshot. Failure before the fast-forward deletes
+  the temporary worktree/branch and keeps the issue in `review` with main and
+  the issue worktree/branch untouched; failure after the fast-forward is
+  reported without reset. The orchestrator never resets main, never resolves
+  conflicts itself, and runs one acceptance at a time. A red suite or a failed
+  verification keeps the issue in `review` without resetting or deleting.
 - Failure/interruption leaves the issue in `inprogress` with its branch and
   worktree intact, keeps blocking later groups, and is reported. Rejection and
   `return` delete the worktree/branch (`deleteBranch: "always"`,
@@ -1052,15 +1163,25 @@ self-accept" are unchanged.
 
 ### 4.7.3 Validation
 
-Scenarios 17–24 added to `docs/validation.md` (depth-2 dispatch, numeric order
+Scenarios 17–26 added to `docs/validation.md` (depth-2 dispatch, numeric order
 + claim-before-dispatch, failure stays `inprogress`, acceptance gate, parallel
-same-prefix group, canonical branch lifecycle, no-merge `finish`, acceptance
-merge and conflict resolution). They are marked `needs user` pending a live
-session after an opencode restart. Queue mechanics — including prefix groups,
-exact-filename disambiguation, `next-group` determinism, slug/branch
-resolution, and collision/rejection behavior — are covered deterministically
-by `python3 -m unittest discover -s tests`; the acceptance conflict resolution
-prompt contract (resolver dispatch, verification gates, abort/restore, and
+same-prefix group, canonical branch lifecycle, no-merge `finish`, off-main
+local queue with one-commit squash acceptance, acceptance conflict resolution
+in the temporary acceptance worktree, and the one-time queue migration
+bootstrap). They are marked `needs user` pending a live session after an
+opencode restart. Queue mechanics — including prefix groups, exact-filename
+disambiguation, `next-group` determinism, slug/branch resolution,
+collision/rejection behavior, and the main-checkout default root from a linked
+worktree — are covered deterministically by
+`python3 -m unittest discover -s tests`. The one-commit squash acceptance
+mechanics (temp `accept/<id>-<slug>` worktree, `merge --squash`, one commit,
+`--ff-only`, queue move without a commit) are covered by
+`tests/test_acceptance_squash.py`, including the new `test_queue_migration_new_bootstrap_squashes_cleanly`
+(preferred unstaged-finish order) and
+`test_queue_migration_committed_finish_falls_back_to_squash`
+(old committed-finish fallback) regression tests;
+the prompt contract (resolver dispatch in the temporary worktree, verification
+gates, failure cleanup, and
 one-acceptance-at-a-time) is likewise covered structurally in
 `tests/test_harness_config.py`, with live model behavior still `needs user`.
 
@@ -1150,7 +1271,11 @@ sign-off complete — all validation scenarios 1–11 pass (`docs/validation.md`
    the remaining commands are pending user go-ahead.
 8. **DONE** — Phase 4.7: issue orchestration at depth 2 (`orchestrator` + `/issues`
    + `scripts/issue_queue.py` + `issues/` scaffolding; `subagent_depth: 2`,
-   `lead` mode `all`). Implemented 2026-10-22; scenarios 17–24 await a live session.
+   `lead` mode `all`). Implemented 2026-10-22; issue 005 (2026-10-23) moved the
+   queue off main (local, git-ignored, untracked, shared by worktrees; no queue
+   commits) and replaced merge-on-accept with one-commit squash acceptance in a
+   temporary `accept/<id>-<slug>` worktree plus `--ff-only`, including the
+   one-time migration bootstrap. Scenarios 17–26 await a live session.
 9. **PENDING** — Phase 5: package the harness as a copyable template for any workspace
    (re-scoped 2026-08-15 — no global promotion; Phase 6 removed). Final phase;
    execution pending user go-ahead.

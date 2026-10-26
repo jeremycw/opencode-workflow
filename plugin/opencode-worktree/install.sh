@@ -38,7 +38,7 @@ AGENT_FILES=(orchestrator lead planner coder reviewer researcher)
 COMMAND_FILES=(issues feature ship status)
 ISSUE_STATES=(todo inprogress review completed)
 ISSUE_QUEUE_SRC="$HARNESS_ROOT/scripts/issue_queue.py"
-ISSUES_SRC="$HARNESS_ROOT/issues"
+ISSUES_SRC="$SCRIPT_DIR/templates/issues"
 
 warn() { printf 'warning: %s\n' "$*" >&2; }
 err() { printf 'error: %s\n' "$*" >&2; }
@@ -217,6 +217,7 @@ if [ "$MODE" = "full" ]; then
   require_dir_or_absent "$TARGET_OC/agents" ".opencode/agents"
   require_dir_or_absent "$TARGET_OC/commands" ".opencode/commands"
   require_file_or_absent "$TARGET_ABS/AGENTS.md" "AGENTS.md"
+  require_file_or_absent "$TARGET_ABS/.gitignore" ".gitignore"
   require_file_or_absent "$TARGET_OC/worktree.jsonc" ".opencode/worktree.jsonc"
   require_file_or_absent "$TARGET_OC/constitution.md" ".opencode/constitution.md"
   require_file_or_absent "$TARGET_ABS/scripts/issue_queue.py" "scripts/issue_queue.py"
@@ -457,6 +458,39 @@ ensure_opencode_gitignore() {
   done
 
   note "updated .opencode/.gitignore (+${#missing[@]} line(s))"
+}
+
+# The issue queue is local state: keep it out of git so queue moves create no
+# commits. Only the exact root-anchored `/issues/` counts: a bare `issues/`
+# would also ignore templates/issues/. Create the root .gitignore when absent,
+# otherwise append `/issues/` unless that anchored line is already present.
+# Never clobber.
+ensure_root_gitignore() {
+  local file="$TARGET_ABS/.gitignore"
+  local line="/issues/"
+
+  if [ -e "$file" ] && [ ! -f "$file" ]; then
+    err "cannot update .gitignore: not a regular file: $file"
+    exit 1
+  fi
+
+  if [ ! -e "$file" ]; then
+    printf '%s\n' "$line" >"$file"
+    note "created .gitignore with $line (local issue queue stays untracked)"
+    return 0
+  fi
+
+  if grep -qxF -- "$line" "$file"; then
+    return 0
+  fi
+
+  backup_file "$file" ".gitignore"
+
+  if [ -s "$file" ] && [ "$(tail -c 1 "$file" | wc -l)" -eq 0 ]; then
+    printf '\n' >>"$file"
+  fi
+  printf '%s\n' "$line" >>"$file"
+  note "updated .gitignore (+$line) so the local issue queue stays untracked"
 }
 
 # Validate target JSON before anything is installed. Invalid files are backed
@@ -865,6 +899,15 @@ if [ "$MODE" = "full" ]; then
   elif [ "$ISSUES_KEPT" -gt 0 ]; then
     ISSUES_STATUS="kept existing (project files win)"
   fi
+
+  ensure_root_gitignore
+
+  if git -C "$TARGET_ABS" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    tracked_issues="$(git -C "$TARGET_ABS" ls-files -- issues 2>/dev/null)" || tracked_issues=""
+    if [ -n "$tracked_issues" ]; then
+      warn "issues/ is still tracked by git; run 'git rm -r --cached issues' in $TARGET_ABS to stop tracking the local queue"
+    fi
+  fi
 fi
 
 # Fallback when a harness file unexpectedly disappears between preflight and
@@ -1074,8 +1117,8 @@ if [ "$MODE" = "full" ]; then
   printf '  workspace:    AGENTS.md (%s)\n' "$AGENTS_STATUS"
   printf '  worktree cfg: .opencode/worktree.jsonc (%s)\n' "$WORKTREE_STATUS"
   printf '  docs:         docs/validation.md\n'
-  printf '  queue:        scripts/issue_queue.py\n'
-  printf '  issues:       issues/ (%s)\n' "$ISSUES_STATUS"
+  printf '  queue:        scripts/issue_queue.py (main checkout issues/, shared by worktrees)\n'
+  printf '  issues:       issues/ (%s; local, git-ignored via root-anchored /issues/)\n' "$ISSUES_STATUS"
   printf '  sandbox:      %s\n' "$SANDBOX_STATUS"
 fi
 printf '  plugin:       .opencode/plugin\n'
