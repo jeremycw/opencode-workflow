@@ -3,8 +3,8 @@ set -euo pipefail
 
 SCRIPT_SOURCE="${BASH_SOURCE[0]}"
 if command -v readlink >/dev/null 2>&1; then
-  if readlink -f -- "$SCRIPT_SOURCE" >/dev/null 2>&1; then
-    SCRIPT_SOURCE="$(readlink -f -- "$SCRIPT_SOURCE")"
+  if readlink -f "$SCRIPT_SOURCE" >/dev/null 2>&1; then
+    SCRIPT_SOURCE="$(readlink -f "$SCRIPT_SOURCE")"
   else
     # Portable symlink resolution for systems without `readlink -f` (macOS).
     while [ -L "$SCRIPT_SOURCE" ]; do
@@ -336,7 +336,7 @@ fi
 
 TMP_DIR="$(mktemp -d)"
 cleanup() {
-  rm -rf -- "$TMP_DIR"
+  rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
 
@@ -344,8 +344,8 @@ BACKUP_TS="$(date +%Y%m%d%H%M%S)"
 BACKUP_ROOT="$TARGET_OC/.install-backups/$BACKUP_TS-$$"
 
 ensure_backup_root() {
-  mkdir -p -- "$BACKUP_ROOT"
-  chmod 0700 -- "$(dirname -- "$BACKUP_ROOT")" "$BACKUP_ROOT"
+  mkdir -p "$BACKUP_ROOT"
+  chmod 0700 "$(dirname "$BACKUP_ROOT")" "$BACKUP_ROOT"
 }
 
 backup_file() {
@@ -354,7 +354,7 @@ backup_file() {
   local dest="$BACKUP_ROOT/$rel"
   ensure_backup_root
   mkdir -p "$(dirname "$dest")"
-  cp -p -- "$abs" "$dest"
+  cp -p "$abs" "$dest"
   note "backed up $rel -> $dest"
 }
 
@@ -364,7 +364,7 @@ backup_dir() {
   local dest="$BACKUP_ROOT/$rel"
   ensure_backup_root
   mkdir -p "$(dirname "$dest")"
-  cp -a -- "$abs" "$dest"
+  cp -a "$abs" "$dest"
   note "backed up $rel -> $dest"
 }
 
@@ -387,7 +387,7 @@ install_managed_file() {
   fi
 
   mkdir -p "$(dirname "$dest")"
-  cp -- "$src" "$dest"
+  cp "$src" "$dest"
 }
 
 # Install a template file only when absent, unless --force is given. Never
@@ -409,7 +409,7 @@ install_if_absent() {
     fi
     if [ "$FORCE" -eq 1 ]; then
       backup_file "$dest" "$rel"
-      cp -- "$src" "$dest"
+      cp "$src" "$dest"
       INSTALL_IF_ABSENT_STATUS="replaced (backup)"
       return 0
     fi
@@ -419,7 +419,7 @@ install_if_absent() {
   fi
 
   mkdir -p "$(dirname "$dest")"
-  cp -- "$src" "$dest"
+  cp "$src" "$dest"
   INSTALL_IF_ABSENT_STATUS="installed"
 }
 
@@ -1078,17 +1078,17 @@ if [ "$MODE" = "full" ] && [ "$WITH_SANDBOX" -eq 1 ]; then
       # Always replace under --force so stale generated files (for example
       # __pycache__) never survive the refresh.
       backup_dir "$SANDBOX_DEST" "sandbox"
-      rm -rf -- "$SANDBOX_DEST"
+      rm -rf "$SANDBOX_DEST"
       mkdir -p "$SANDBOX_DEST"
       for file in "${SANDBOX_FILES[@]}"; do
-        cp -- "$SANDBOX_SRC/$file" "$SANDBOX_DEST/$file"
+        cp "$SANDBOX_SRC/$file" "$SANDBOX_DEST/$file"
       done
       SANDBOX_STATUS="replaced (backup)"
     fi
   else
     mkdir -p "$SANDBOX_DEST"
     for file in "${SANDBOX_FILES[@]}"; do
-      cp -- "$SANDBOX_SRC/$file" "$SANDBOX_DEST/$file"
+      cp "$SANDBOX_SRC/$file" "$SANDBOX_DEST/$file"
     done
     SANDBOX_STATUS="installed (9 files)"
   fi

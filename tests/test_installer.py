@@ -278,6 +278,52 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(len(backups), 1)
         self.assertTrue((backups[0] / ".opencode" / "opencode.json").is_file())
 
+    def test_installer_avoids_nonportable_end_of_options(self):
+        installer = INSTALLER.read_text(encoding="utf-8")
+        for pattern in (
+            "mkdir -p --",
+            "chmod 0700 --",
+            "cp -p --",
+            "cp -a --",
+            'cp -- "',
+            "rm -rf --",
+            "dirname --",
+            "readlink -f --",
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertNotIn(pattern, installer)
+
+    def test_backup_survives_chmod_without_end_of_options(self):
+        real_chmod = shutil.which("chmod")
+        self.assertIsNotNone(real_chmod)
+        stub = self.bin / "chmod"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'for arg in "$@"; do\n'
+            '  if [ "$arg" = "--" ]; then\n'
+            '    echo "chmod: --; no such file or directory" >&2\n'
+            "    exit 1\n"
+            "  fi\n"
+            "done\n"
+            f'exec "{real_chmod}" "$@"\n',
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+        oc = self.target / ".opencode"
+        oc.mkdir()
+        (oc / "opencode.json").write_text(
+            json.dumps({"custom": {"keep": True}}), encoding="utf-8"
+        )
+
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("chmod: --", result.stderr)
+        self.assertEqual(self.read_config()["custom"], {"keep": True})
+        backups = self.backup_entries(self.target)
+        self.assertEqual(len(backups), 1)
+        self.assertTrue((backups[0] / ".opencode" / "opencode.json").is_file())
+
     def test_bash_allow_policy_gains_missing_harness_rules(self):
         oc = self.target / ".opencode"
         oc.mkdir()
