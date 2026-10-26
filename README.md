@@ -267,13 +267,13 @@ bash/`worktree_apply`, not a new terminal window.
 ├── PLAN.md                    # Implementation plan + phase status
 ├── README.md                  # This file
 ├── AGENTS.md                  # Workspace notes (project facts, conventions)
+├── install.sh                 # Full-harness or plugin-only installer
 ├── RESEARCH-grok-build.md     # Research: grok-build harness (parallel tasks, worktrees)
 ├── issues/                    # LOCAL queue (git-ignored/untracked, shared by worktrees)
 │   └── README.md              # Local copy of the queue contract
 ├── tests/                     # Harness config + issue-queue + acceptance tests (stdlib unittest)
 ├── plugin/
 │   └── opencode-worktree/
-│       ├── install.sh          # Full-harness or plugin-only installer
 │       └── templates/
 │           └── issues/         # Canonical queue scaffolding copied by full installs
 │               └── README.md   # Canonical queue contract
@@ -310,7 +310,7 @@ bash/`worktree_apply`, not a new terminal window.
 2. Install the harness into a project from this checkout:
 
    ```bash
-   ./plugin/opencode-worktree/install.sh /path/to/project
+   ./install.sh /path/to/project
    ```
 
    This one command writes only runtime harness files under `.opencode/`

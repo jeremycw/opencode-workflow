@@ -118,15 +118,15 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("issue_queue.py status", status_text)
 
     def test_installer_ships_orchestrator_issues_and_queue_script(self):
-        installer = (ROOT / "plugin" / "opencode-worktree" / "install.sh").read_text(
-            encoding="utf-8"
-        )
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertIn(
             "AGENT_FILES=(orchestrator lead planner coder reviewer researcher)", installer
         )
         self.assertIn("COMMAND_FILES=(issues feature ship status)", installer)
         self.assertIn("ISSUE_STATES=(todo inprogress review completed)", installer)
-        self.assertIn('ISSUES_SRC="$SCRIPT_DIR/templates/issues"', installer)
+        self.assertIn('HARNESS_ROOT="$SCRIPT_DIR"', installer)
+        self.assertIn('SRC_DIR="$PLUGIN_ROOT/src/plugin"', installer)
+        self.assertIn('ISSUES_SRC="$PLUGIN_ROOT/templates/issues"', installer)
         self.assertNotIn('ISSUES_SRC="$HARNESS_ROOT/issues"', installer)
         self.assertNotIn('grep -qxF -- "issues/" "$file"', installer)
         self.assertIn('grep -qxF -- "$line" "$file"', installer)

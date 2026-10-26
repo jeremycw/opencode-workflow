@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-INSTALLER = ROOT / "plugin" / "opencode-worktree" / "install.sh"
+INSTALLER = ROOT / "install.sh"
 HARNESS_CONFIG = ROOT / ".opencode" / "opencode.json"
 BASH = shutil.which("bash")
 NODE = shutil.which("node")

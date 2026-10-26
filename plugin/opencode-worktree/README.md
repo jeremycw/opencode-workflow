@@ -94,7 +94,7 @@ worktree_resolve_conflicts:
 Run the installer from a harness checkout against your project:
 
 ```bash
-./plugin/opencode-worktree/install.sh /path/to/your/project
+./install.sh /path/to/your/project
 ```
 
 `TARGET_PROJECT_DIR` defaults to the current directory. The installer is
@@ -159,7 +159,7 @@ Full mode never installs harness docs, a target `AGENTS.md`, a root `scripts/`
 directory, or a root `opencode.json`. It also never copies `PLAN.md`, the root
 `README.md`/`TODO.md`/research notes, `.git`, `node_modules`, lockfiles, the
 harness's own installed `.opencode/plugin/`, or the plugin package's development
-files (`README`, `LICENSE`, `tsconfig`, `package.json`, `install.sh`, its local
+files (`README`, `LICENSE`, `tsconfig`, `package.json`, its local
 `.opencode/worktree.jsonc`). It never replaces the root `.gitignore` wholesale;
 it only appends the missing `/issues/` entry (with a backup).
 

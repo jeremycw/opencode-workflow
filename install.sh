@@ -17,9 +17,10 @@ if command -v readlink >/dev/null 2>&1; then
   fi
 fi
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd -P)"
-SRC_DIR="$SCRIPT_DIR/src/plugin"
-MANIFEST="$SCRIPT_DIR/package.json"
-HARNESS_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+HARNESS_ROOT="$SCRIPT_DIR"
+PLUGIN_ROOT="$HARNESS_ROOT/plugin/opencode-worktree"
+SRC_DIR="$PLUGIN_ROOT/src/plugin"
+MANIFEST="$PLUGIN_ROOT/package.json"
 
 SANDBOX_SRC="$HARNESS_ROOT/sandbox"
 SANDBOX_FILES=(
@@ -37,7 +38,7 @@ AGENT_FILES=(orchestrator lead planner coder reviewer researcher)
 COMMAND_FILES=(issues feature ship status)
 ISSUE_STATES=(todo inprogress review completed)
 ISSUE_QUEUE_SRC="$HARNESS_ROOT/.opencode/scripts/issue_queue.py"
-ISSUES_SRC="$SCRIPT_DIR/templates/issues"
+ISSUES_SRC="$PLUGIN_ROOT/templates/issues"
 
 warn() { printf 'warning: %s\n' "$*" >&2; }
 err() { printf 'error: %s\n' "$*" >&2; }
